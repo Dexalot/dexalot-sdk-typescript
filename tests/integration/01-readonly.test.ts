@@ -23,20 +23,22 @@ describe('Integration: Read-Only Tools', () => {
         console.log('✅ get_environments passed');
     });
 
-    it('should get mainnets', async () => {
-        const mainnets = client.getMainnets();
-        
-        expect(typeof mainnets).toBe('object');
-        // Fuji chain ID should be present
-        expect(mainnets[43113] || mainnets['43113']).toBeDefined();
-        console.log('✅ get_mainnets passed');
+    it('should get chains', async () => {
+        const result = await client.getChains();
+
+        expect(result.success).toBe(true);
+        const chains = result.data!;
+        expect(typeof chains).toBe('object');
+        expect(chains[43113] != null || chains[43114] != null).toBe(true);
+        console.log('✅ get_chains passed');
     });
 
     it('should get swap pairs', async () => {
-        const mainnets = client.getMainnets();
-        const chainId = Object.keys(mainnets)[0];
+        const chainsRes = await client.getChains();
+        expect(chainsRes.success).toBe(true);
+        const chainId = Number(Object.keys(chainsRes.data!)[0]);
         
-        const result = await client.getSwapPairs(parseInt(chainId, 10));
+        const result = await client.getSwapPairs(chainId);
         
         expect(result.success).toBe(true);
         expect(result.data).toBeDefined();

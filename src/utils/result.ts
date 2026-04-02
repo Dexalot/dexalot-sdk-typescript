@@ -1,6 +1,5 @@
 /**
- * Generic Result type for consistent error handling.
- * Matches Python SDK's Result[T] implementation.
+ * Discriminated success/error wrapper for SDK operations (`success`, `data`, `error`).
  */
 export class Result<T> {
     private constructor(

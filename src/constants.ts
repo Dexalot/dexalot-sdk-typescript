@@ -4,7 +4,6 @@ export const KNOWN_CHAIN_IDS = {
   AVAX_FUJI: 43113,
 } as const;
 
-// Legacy alias for backward compatibility
 export const CHAIN_ID = KNOWN_CHAIN_IDS;
 
 // Environments

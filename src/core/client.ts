@@ -4,17 +4,17 @@ import { configureLogging, type LogLevel } from '../utils/observability.js';
 import { version } from '../version.js';
 
 export class DexalotClient extends TransferClient {
-    /** Human-readable ↔ atomic unit conversion (parity with Python `DexalotClient.unit_conversion`). */
+    /** Convert between human-readable token amounts and atomic (wei-style) integers. */
     static unitConversion(amount: string | number, decimals: number, toBase: boolean = true): string {
         return Utils.unitConversion(amount, decimals, toBase);
     }
 
-    /** SDK logging setup (parity with Python `DexalotClient.configure_logging`). */
+    /** Configure global log level and console/json formatting. */
     static configureLogging(logLevel?: string, logFormat: 'console' | 'json' = 'console'): void {
         configureLogging(logLevel as LogLevel | undefined, logFormat);
     }
 
-    /** Package version string (parity with Python `get_version`). */
+    /** Package version string from `version.ts`. */
     static getVersion(): string {
         return version;
     }

@@ -58,7 +58,6 @@ export class BaseClient {
     public portfolioMainContracts: Record<string, Contract> = {};
     public mainnetRfqContracts: Record<string, Contract> = {};
     
-    // Legacy single contract accessor (for backward compatibility)
     public get portfolioMainAvaxContract(): Contract | null {
         return this.portfolioMainContracts['Fuji'] || 
                this.portfolioMainContracts['Avalanche'] || 
@@ -93,12 +92,10 @@ export class BaseClient {
                 this.signer = new Wallet(this.config.privateKey);
             }
         } else if (typeof configOrSigner === 'string') {
-            // API URL string provided (legacy)
             this.config = createConfig();
             this.parentEnv = this.config.parentEnv;
             this.apiBaseUrl = configOrSigner;
         } else if (configOrSigner) {
-            // Signer provided (legacy)
             this.config = createConfig();
             this.signer = configOrSigner;
             this.parentEnv = this.config.parentEnv;
@@ -143,20 +140,20 @@ export class BaseClient {
         // Initialize provider manager
         if (this.config.providerFailoverEnabled) {
             this._providerManager = new ProviderManager({
-                failoverCooldown: this.config.providerFailoverCooldown,
+                failoverCooldown: this.config.providerFailoverCooldown * 1000,
                 maxFailures: this.config.providerFailoverMaxFailures,
             });
         }
 
-        // Initialize axios
+        // Initialize axios (read timeout matches Python aiohttp ClientTimeout total)
         this.axios = axios.create({
             baseURL: this.apiBaseUrl,
-            timeout: this.config.timeoutRead,
+            timeout: this.config.timeoutRead * 1000,
         });
     }
 
     /**
-     * Reject http:// RPC URLs unless allowInsecureRpc is enabled (parity with Python SDK).
+     * Reject http:// RPC URLs unless `allowInsecureRpc` is enabled.
      */
     public _rejectInsecureRpcUrls(urls: string[]): string[] {
         const insecure = urls.filter(u => u.toLowerCase().startsWith('http://'));
@@ -236,10 +233,11 @@ export class BaseClient {
         if (this.config.retryEnabled) {
             const retryOpts: RetryOptions = {
                 maxAttempts: this.config.retryMaxAttempts,
-                initialDelay: this.config.retryInitialDelay,
-                maxDelay: this.config.retryMaxDelay,
+                initialDelay: this.config.retryInitialDelay * 1000,
+                maxDelay: this.config.retryMaxDelay * 1000,
                 exponentialBase: this.config.retryExponentialBase,
                 retryOnStatus: this.config.retryOnStatus,
+                retryOnExceptions: this.config.retryOnExceptions,
             };
             return asyncRetry(makeRequest, retryOpts)();
         }
@@ -252,16 +250,16 @@ export class BaseClient {
     }
 
     /**
-     * Initialize the client: fetch configuration and contract addresses.
+     * Load environments, tokens, RFQ pairs, deployments, and CLOB pairs into the client.
      */
-    public async initialize(): Promise<Result<string>> {
+    public async initializeClient(): Promise<Result<string>> {
         return trackOperation(
             this._logger,
-            'initialize',
+            'initializeClient',
             async () => {
                 // Fetch environments first (sets providers needed for deployments)
                 await this._fetchEnvironments();
-                
+
                 // Then fetch other data in parallel
                 await Promise.all([
                     this._fetchTokens(),
@@ -269,7 +267,7 @@ export class BaseClient {
                     this._fetchDeployments(),
                     this._fetchClobPairs(),
                 ]);
-                
+
                 return Result.ok('Client initialized with all configurations.');
             },
             { parentEnv: this.parentEnv }
@@ -277,6 +275,13 @@ export class BaseClient {
             const msg = this._sanitizeError(error, 'initializing client');
             return Result.fail(msg);
         });
+    }
+
+    /**
+     * Explicit open hook; axios is already created in the constructor, so this resolves immediately.
+     */
+    public async connect(): Promise<void> {
+        return Promise.resolve();
     }
 
     /**
@@ -370,7 +375,6 @@ export class BaseClient {
             // Transform environments and store in cache
             this.environmentsCache = environments.map(env => this._transformEnvironmentFromAPI(env));
 
-            // Use fallback logic for internal processing (backward compatibility)
             for (const env of environments) {
                 const chainId = env.chainid || env.chain_id;
                 const envType = env.env_type || env.type;
@@ -628,7 +632,6 @@ export class BaseClient {
                 } else if (contractType === 'MainnetRFQ') {
                     const chainName = this._getChainNameFromEnv(envString);
                     if (chainName && address) {
-                        // deployments['MainnetRFQ'] is always initialized at line 529 above
                         this.deployments['MainnetRFQ'][chainName] = { address, abi };
                         
                         const provider = this.connectedChainProviders[chainName];
@@ -732,16 +735,57 @@ export class BaseClient {
     }
 
     /**
-     * Update the signer and reconnect all contracts.
+     * Map of chain IDs to network display names from the environments API (static cache tier).
      */
-    public async updateSigner(newSigner: Signer): Promise<Result<string>> {
-        try {
-            this.signer = newSigner;
-            if (newSigner.provider) {
-                this.provider = newSigner.provider;
+    public async getChains(): Promise<Result<Record<number, string>>> {
+        const cachedFn = withInstanceCache(
+            this,
+            this._staticCache,
+            'getChains',
+            async (): Promise<Result<Record<number, string>>> => {
+                const envsResult = await this.getEnvironments();
+                if (!envsResult.success) {
+                    return Result.fail(
+                        `Failed to fetch environments: ${envsResult.error}`
+                    );
+                }
+                const chains: Record<number, string> = {};
+                for (const env of envsResult.data || []) {
+                    const cid = env.chainId ?? env.chain_id;
+                    const name = env.network;
+                    if (cid != null && cid !== '') {
+                        const id = typeof cid === 'number' ? cid : Number(cid);
+                        if (!Number.isNaN(id)) {
+                            chains[id] = name ?? '';
+                        }
+                    }
+                }
+                return Result.ok(chains);
             }
+        );
+        return cachedFn();
+    }
 
+    /**
+     * Assign the signer and rebuild cached contract instances to use it as the transaction runner.
+     */
+    public async setSigner(newSigner: Signer): Promise<Result<string>> {
+        this.signer = newSigner;
+        if (newSigner.provider) {
+            this.provider = newSigner.provider;
+        }
+        return Promise.resolve(this._reconnectContractsForSigner());
+    }
+
+    /**
+     * Rebuild subnet/mainnet contract instances for the current signer.
+     */
+    private _reconnectContractsForSigner(): Result<string> {
+        try {
             const runner = this.signer;
+            if (!runner) {
+                return Result.fail('Signer not configured.');
+            }
 
             // Reconnect subnet contracts
             if (this.tradePairsContract && this.deployments['TradePairs']) {
@@ -860,19 +904,6 @@ export class BaseClient {
         return cachedFn();
     }
 
-    /**
-     * Return a dictionary of connected mainnet networks.
-     */
-    public getMainnets(): Record<number, string> {
-        const mainnets: Record<number, string> = {};
-        for(const [name, config] of Object.entries(this.chainConfig)) {
-            if (config.chain_id) {
-                mainnets[config.chain_id] = name;
-            }
-        }
-        return mainnets;
-    }
-
     public getConnectedChains(): string[] {
         return Object.keys(this.chainConfig);
     }
@@ -916,7 +947,7 @@ export class BaseClient {
     /**
      * Reinitialize all client configuration data.
      * 
-     * Refreshes all data loaded during `initialize()`:
+     * Refreshes all data loaded during `initializeClient()`:
      * - Environments (chainConfig, providers, chainId, subnetChainId, env)
      * - Tokens (tokenData)
      * - RFQ pairs (rfqPairs)
@@ -1015,7 +1046,7 @@ export class BaseClient {
     }
 
     /**
-     * Map user-facing chain name to ProviderManager registry key (matches Python SDK).
+     * Map user-facing chain name to ProviderManager registry key (`Dexalot L1` → `DEXALOT_L1`).
      */
     public _providerManagerChainKey(chainDisplayName: string): string {
         return chainDisplayName === 'Dexalot L1' ? 'DEXALOT_L1' : chainDisplayName;
@@ -1068,7 +1099,7 @@ export class BaseClient {
     }
 
     /**
-     * Subnet chain display name for ProviderManager key `DEXALOT_L1` / Python `w3_l1` flows.
+     * Display name for the Dexalot subnet used as ProviderManager key `DEXALOT_L1`.
      */
     protected _dexalotL1DisplayName(): string {
         return 'Dexalot L1';
@@ -1130,8 +1161,8 @@ export class BaseClient {
     protected _rpcRetryOptions(): RetryOptions {
         return {
             maxAttempts: this.config.retryMaxAttempts,
-            initialDelay: this.config.retryInitialDelay,
-            maxDelay: this.config.retryMaxDelay,
+            initialDelay: this.config.retryInitialDelay * 1000,
+            maxDelay: this.config.retryMaxDelay * 1000,
             exponentialBase: this.config.retryExponentialBase,
             retryOnStatus: this.config.retryOnStatus,
             retryOnNetworkError: true,
@@ -1145,8 +1176,7 @@ export class BaseClient {
     }
 
     /**
-     * Run an RPC op with optional per-provider retry, then failover to the next URL on failure
-     * (matches Python `_rpc_call_with_failover` for read-style calls).
+     * Run an RPC operation with per-provider retry and failover across registered URLs.
      */
     public async withRpcFailover<T>(
         chainDisplayName: string,
@@ -1201,9 +1231,9 @@ export class BaseClient {
     }
 
     /**
-     * Close the client and clean up resources.
+     * Tear down WebSockets, rate limiters, and nonce manager state.
      */
-    public close(): void {
+    public async close(): Promise<void> {
         if (this._wsManager) {
             this._wsManager.disconnect();
             this._wsManager = null;
@@ -1222,5 +1252,6 @@ export class BaseClient {
         }
 
         this._logger.debug('Dexalot client closed');
+        return Promise.resolve();
     }
 }

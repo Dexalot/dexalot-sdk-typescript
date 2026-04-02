@@ -164,6 +164,79 @@ export class TransferClient extends SwapClient {
         }
 
         /**
+         * Estimate bridge fee for a deposit on the source chain (fee returned as native-token float, wei ÷ 1e18).
+         */
+        public async getDepositBridgeFee(
+            token: string,
+            amount: number,
+            sourceChain: string
+        ): Promise<Result<number>> {
+            const tokenResult = validateTokenSymbol(token, 'token');
+            if (!tokenResult.success) return Result.fail(tokenResult.error!);
+
+            const amountResult = validatePositiveFloat(amount, 'amount');
+            if (!amountResult.success) return Result.fail(amountResult.error!);
+
+            if (!this.signer) {
+                return Result.fail('Signer required for deposit bridge fee.');
+            }
+
+            const resolved = this.resolveChainReference(sourceChain);
+            if (!resolved.success || !resolved.data) {
+                return Result.fail(
+                    resolved.error || `Could not resolve source chain '${sourceChain}'.`
+                );
+            }
+
+            const canonicalSourceChain = resolved.data.canonicalName;
+            if (!(canonicalSourceChain in this.chainConfig)) {
+                return Result.fail(`Source chain '${sourceChain}' not known.`);
+            }
+
+            const mainDep = this._portfolioMainDeployment(canonicalSourceChain);
+            if (!mainDep) {
+                const available = Object.keys(this.deployments['PortfolioMain'] || {}).join(', ');
+                return Result.fail(
+                    `PortfolioMain contract not found for '${canonicalSourceChain}'. Available: ${available || 'none'}`
+                );
+            }
+
+            const chainConfig = this.chainConfig[canonicalSourceChain];
+            const srcChainId = chainConfig.chain_id;
+            if (!srcChainId) {
+                return Result.fail(`Chain config for '${canonicalSourceChain}' missing chain_id.`);
+            }
+
+            const normalized = this.normalizeToken(token);
+            const dec = this._getTokenDecimals(normalized, srcChainId);
+            if (dec === null) {
+                return Result.fail(
+                    `Token ${normalized} not supported on source chain ${canonicalSourceChain} (ID ${srcChainId}).`
+                );
+            }
+
+            try {
+                const bridgeFeeWei = await this.withRpcFailover(
+                    canonicalSourceChain,
+                    async (provider) => {
+                        const contract = this._contractForSigner(
+                            provider,
+                            mainDep.address,
+                            mainDep.abi
+                        );
+                        const amountWei = BigInt(Utils.unitConversion(amount, dec, true));
+                        const symbolBytes = Utils.toBytes32(normalized);
+                        const bridgeId = this._getBridgeId(canonicalSourceChain, false);
+                        return this._getBridgeFee(contract, bridgeId, symbolBytes, amountWei);
+                    }
+                );
+                return Result.ok(Number(bridgeFeeWei) / 1e18);
+            } catch (e) {
+                return Result.fail(this._sanitizeError(e, 'getting bridge fee'));
+            }
+        }
+
+        /**
          * Deposit tokens from a mainnet chain to Dexalot.
          */
         public async deposit(
@@ -172,7 +245,7 @@ export class TransferClient extends SwapClient {
             sourceChain: string, 
             useLayerZero: boolean = false,
             waitForReceipt: boolean = true
-        ): Promise<Result<{txHash: string}>> {
+        ): Promise<Result<{ txHash: string; operation: string }>> {
             const tokenResult = validateTokenSymbol(token, 'token');
             if (!tokenResult.success) return Result.fail(tokenResult.error!);
 
@@ -253,10 +326,10 @@ export class TransferClient extends SwapClient {
                         if (!receipt || receipt.status !== 1) {
                             return Result.fail("Transaction reverted");
                         }
-                        return Result.ok({ txHash: receipt.hash });
+                        return Result.ok({ txHash: receipt.hash, operation: 'deposit' });
                     }
-                    
-                    return Result.ok({ txHash: tx.hash });
+
+                    return Result.ok({ txHash: tx.hash, operation: 'deposit' });
                 });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'depositing tokens'));
@@ -272,7 +345,7 @@ export class TransferClient extends SwapClient {
             destinationChain: string, 
             useLayerZero: boolean = false,
             waitForReceipt: boolean = true
-        ): Promise<Result<{txHash: string}>> {
+        ): Promise<Result<{ txHash: string; operation: string }>> {
             const tokenResult = validateTokenSymbol(token, 'token');
             if (!tokenResult.success) return Result.fail(tokenResult.error!);
 
@@ -332,10 +405,10 @@ export class TransferClient extends SwapClient {
                         if (!receipt || receipt.status !== 1) {
                             return Result.fail("Transaction reverted");
                         }
-                        return Result.ok({ txHash: receipt.hash });
+                        return Result.ok({ txHash: receipt.hash, operation: 'withdraw' });
                     }
-                    
-                    return Result.ok({ txHash: tx.hash });
+
+                    return Result.ok({ txHash: tx.hash, operation: 'withdraw' });
                 });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'withdrawing tokens'));
@@ -350,7 +423,7 @@ export class TransferClient extends SwapClient {
             amount: number, 
             toAddress: string,
             waitForReceipt: boolean = true
-        ): Promise<Result<{txHash: string}>> {
+        ): Promise<Result<{ txHash: string; operation: string }>> {
             const tokenResult = validateTokenSymbol(token, 'token');
             if (!tokenResult.success) return Result.fail(tokenResult.error!);
 
@@ -389,10 +462,10 @@ export class TransferClient extends SwapClient {
                         if (!receipt || receipt.status !== 1) {
                             return Result.fail("Transaction reverted");
                         }
-                        return Result.ok({ txHash: receipt.hash });
+                        return Result.ok({ txHash: receipt.hash, operation: 'transfer_portfolio' });
                     }
-                    
-                    return Result.ok({ txHash: tx.hash });
+
+                    return Result.ok({ txHash: tx.hash, operation: 'transfer_portfolio' });
                 });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'transferring tokens'));
@@ -400,20 +473,25 @@ export class TransferClient extends SwapClient {
         }
 
         /**
-         * Transfer tokens (alias for transferPortfolio).
+         * Transfer tokens from the signer portfolio to another address on Dexalot L1 (`token`, `toAddress`, `amount`).
          */
         public async transferToken(
-            token: string, 
-            toAddress: string, 
-            amount: number
-        ): Promise<Result<{txHash: string}>> {
-            return this.transferPortfolio(token, amount, toAddress);
+            token: string,
+            toAddress: string,
+            amount: number,
+            waitForReceipt: boolean = true
+        ): Promise<Result<string>> {
+            const r = await this.transferPortfolio(token, amount, toAddress, waitForReceipt);
+            if (!r.success || !r.data) {
+                return Result.fail(r.error || 'Transfer failed');
+            }
+            return Result.ok(`Transfer Token transaction sent: ${r.data.txHash}`);
         }
 
         /**
          * Add gas (withdraw native ALOT to wallet).
          */
-        public async addGas(amount: number, waitForReceipt: boolean = true): Promise<Result<{txHash: string}>> {
+        public async addGas(amount: number, waitForReceipt: boolean = true): Promise<Result<{ txHash: string; operation: string }>> {
             const amountResult = validatePositiveFloat(amount, 'amount');
             if (!amountResult.success) return Result.fail(amountResult.error!);
 
@@ -436,10 +514,10 @@ export class TransferClient extends SwapClient {
                         if (!receipt || receipt.status !== 1) {
                             return Result.fail("Transaction reverted");
                         }
-                        return Result.ok({ txHash: receipt.hash });
+                        return Result.ok({ txHash: receipt.hash, operation: 'add_gas' });
                     }
-                    
-                    return Result.ok({ txHash: tx.hash });
+
+                    return Result.ok({ txHash: tx.hash, operation: 'add_gas' });
                 });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'adding gas'));
@@ -449,7 +527,7 @@ export class TransferClient extends SwapClient {
         /**
          * Remove gas (deposit native ALOT from wallet).
          */
-        public async removeGas(amount: number, waitForReceipt: boolean = true): Promise<Result<{txHash: string}>> {
+        public async removeGas(amount: number, waitForReceipt: boolean = true): Promise<Result<{ txHash: string; operation: string }>> {
             const amountResult = validatePositiveFloat(amount, 'amount');
             if (!amountResult.success) return Result.fail(amountResult.error!);
 
@@ -472,10 +550,10 @@ export class TransferClient extends SwapClient {
                         if (!receipt || receipt.status !== 1) {
                             return Result.fail("Transaction reverted");
                         }
-                        return Result.ok({ txHash: receipt.hash });
+                        return Result.ok({ txHash: receipt.hash, operation: 'remove_gas' });
                     }
-                    
-                    return Result.ok({ txHash: tx.hash });
+
+                    return Result.ok({ txHash: tx.hash, operation: 'remove_gas' });
                 });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'removing gas'));

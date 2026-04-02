@@ -343,7 +343,7 @@ describe('WebSocketManager', () => {
             const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation();
             const managerWithMaxAttempts = new WebSocketManager(wsUrl, {
                 reconnectMaxAttempts: 2,
-                reconnectInitialDelay: 100
+                reconnectInitialDelay: 0.1
             });
             
             // Manually set reconnectAttempts to max to test the limit
@@ -563,6 +563,245 @@ describe('WebSocketManager', () => {
             (manager as any).scheduleReconnect();
             // Should return early without doing anything
             expect(manager.getState()).toBe('disconnected');
+        });
+    });
+
+    describe('handleMessage routing', () => {
+        it('coerces non-string/non-buffer message data to string in onmessage', () => {
+            manager.connect();
+            jest.advanceTimersByTime(10);
+            const mockWs = (manager as any).ws as MockWebSocket;
+            expect(mockWs.onmessage).not.toBeNull();
+            (mockWs.onmessage as any)({ data: { not: 'string' } });
+            expect(manager).toBeDefined();
+        });
+
+        it('dispatches orderBooks to matching orderbook subscription', () => {
+            const cb = jest.fn();
+            manager.subscribe('ob', cb, false, {
+                kind: 'orderbook',
+                pair: 'AVAX/USDC',
+                decimal: 2,
+            });
+            (manager as any).handleMessage(
+                JSON.stringify({ type: 'orderBooks', pair: 'AVAX/USDC', n: 1 })
+            );
+            expect(cb).toHaveBeenCalled();
+        });
+
+        it('swallows errors from orderbook callbacks', () => {
+            const cb = jest.fn(() => {
+                throw new Error('user callback');
+            });
+            manager.subscribe('ob2', cb, false, {
+                kind: 'orderbook',
+                pair: 'ERR/PAIR',
+                decimal: 1,
+            });
+            expect(() =>
+                (manager as any).handleMessage(
+                    JSON.stringify({ type: 'orderBooks', pair: 'ERR/PAIR' })
+                )
+            ).not.toThrow();
+        });
+
+        it('routes wrapped message with inner topic', () => {
+            const cb = jest.fn();
+            manager.subscribe('inner-topic', cb);
+            (manager as any).handleMessage(
+                JSON.stringify({ type: 'message', data: { topic: 'inner-topic', v: 1 } })
+            );
+            expect(cb).toHaveBeenCalledWith({ topic: 'inner-topic', v: 1 });
+        });
+
+        it('routes top-level topic subscriptions', () => {
+            const cb = jest.fn();
+            manager.subscribe('top/t', cb);
+            (manager as any).handleMessage(JSON.stringify({ topic: 'top/t', x: 2 }));
+            expect(cb).toHaveBeenCalled();
+        });
+
+        it('matches subscription when message.type equals topic (non-orderbook)', () => {
+            const cb = jest.fn();
+            manager.subscribe('evtKind', cb);
+            (manager as any).handleMessage(JSON.stringify({ type: 'evtKind', p: 3 }));
+            expect(cb).toHaveBeenCalled();
+        });
+
+        it('skips orderbook subs in type-equals-topic loop', () => {
+            const cb = jest.fn();
+            manager.subscribe(
+                'dupType',
+                cb,
+                false,
+                { kind: 'orderbook', pair: 'A/B', decimal: 1 }
+            );
+            (manager as any).handleMessage(JSON.stringify({ type: 'dupType', x: 1 }));
+            expect(cb).not.toHaveBeenCalled();
+        });
+
+        it('sendSubscription returns early when topic is not registered', async () => {
+            manager.connect();
+            jest.advanceTimersByTime(10);
+            await expect((manager as any).sendSubscription('__none__')).resolves.toBeUndefined();
+            manager.disconnect();
+        });
+    });
+
+    describe('private subscribe and orderbook unsubscribe wire payloads', () => {
+        it('appendTraderAddress ignores auth getAddress errors', async () => {
+            const mgr = new WebSocketManager(
+                wsUrl,
+                {},
+                {
+                    auth: {
+                        getAddress: async () => {
+                            throw new Error('no addr');
+                        },
+                        signMessage: async () => '0x',
+                    },
+                }
+            );
+            mgr.subscribe('obx', jest.fn(), false, {
+                kind: 'orderbook',
+                pair: 'A/B',
+                decimal: 1,
+            });
+            mgr.connect();
+            jest.advanceTimersByTime(10);
+            await expect((mgr as any).sendSubscription('obx')).resolves.toBeUndefined();
+            mgr.disconnect();
+        });
+
+        it('appendTraderAddress sets traderaddress on orderbook subscribe when auth succeeds', async () => {
+            const addr = '0x' + 'c'.repeat(40);
+            const mgr = new WebSocketManager(
+                wsUrl,
+                {},
+                {
+                    auth: {
+                        getAddress: async () => addr,
+                        signMessage: async () => '0x',
+                    },
+                }
+            );
+            mgr.subscribe('obok', jest.fn(), false, {
+                kind: 'orderbook',
+                pair: 'X/Y',
+                decimal: 2,
+            });
+            mgr.connect();
+            jest.advanceTimersByTime(10);
+            await (mgr as any).sendSubscription('obok');
+            const mockWs = (mgr as any).ws as MockWebSocket;
+            const raw = mockWs.sentMessages.find((m: string) => m.includes('X/Y'));
+            expect(raw).toBeDefined();
+            expect(JSON.parse(raw!).traderaddress).toBe(addr);
+            mgr.disconnect();
+        });
+
+        it('subscribes private topic with dexalot auth', async () => {
+            const mgr = new WebSocketManager(
+                wsUrl,
+                {},
+                {
+                    wsTimeOffsetMs: 0,
+                    auth: {
+                        getAddress: async () => '0xabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd',
+                        signMessage: async () => '0xsig',
+                    },
+                }
+            );
+            mgr.subscribe('privateTopic', jest.fn(), true);
+            mgr.connect();
+            jest.advanceTimersByTime(10);
+            await (mgr as any).sendSubscription('privateTopic');
+            const mockWs = (mgr as any).ws as MockWebSocket;
+            const hit = mockWs.sentMessages.some(
+                (m: string) => m.includes('privateTopic') && m.includes('subscribe')
+            );
+            expect(hit).toBe(true);
+            mgr.disconnect();
+        });
+
+        it('private subscribe applies wsTimeOffsetMs to auth timestamp', async () => {
+            const mgr = new WebSocketManager(
+                wsUrl,
+                {},
+                {
+                    wsTimeOffsetMs: 42_000,
+                    auth: {
+                        getAddress: async () => '0xabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd',
+                        signMessage: async () => '0xsig',
+                    },
+                }
+            );
+            mgr.subscribe('privOffset', jest.fn(), true);
+            mgr.connect();
+            jest.advanceTimersByTime(10);
+            const before = Date.now();
+            await (mgr as any).sendSubscription('privOffset');
+            const mockWs = (mgr as any).ws as MockWebSocket;
+            const raw = mockWs.sentMessages.find((m: string) => m.includes('privOffset'));
+            const ts = JSON.parse(raw!).timestamp as number;
+            expect(ts).toBeGreaterThanOrEqual(before + 42_000);
+            mgr.disconnect();
+        });
+
+        it('private subscribe leaves signature without 0x prefix unchanged', async () => {
+            const mgr = new WebSocketManager(
+                wsUrl,
+                {},
+                {
+                    wsTimeOffsetMs: 0,
+                    auth: {
+                        getAddress: async () => '0xabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd',
+                        signMessage: async () => 'deadbeef',
+                    },
+                }
+            );
+            mgr.subscribe('privNo0x', jest.fn(), true);
+            mgr.connect();
+            jest.advanceTimersByTime(10);
+            await (mgr as any).sendSubscription('privNo0x');
+            const mockWs = (mgr as any).ws as MockWebSocket;
+            const raw = mockWs.sentMessages.find((m: string) => m.includes('privNo0x'));
+            expect(JSON.parse(raw!).signature).toBe('deadbeef');
+            mgr.disconnect();
+        });
+
+        it('subscribes private topic with static auth signature when auth is absent', async () => {
+            const mgr = new WebSocketManager(wsUrl);
+            mgr.setAuthSignature('cafebabe');
+            mgr.subscribe('privStatic', jest.fn(), true);
+            mgr.connect();
+            jest.advanceTimersByTime(10);
+            await (mgr as any).sendSubscription('privStatic');
+            const mockWs = (mgr as any).ws as MockWebSocket;
+            const raw = mockWs.sentMessages.find((m: string) => m.includes('privStatic'));
+            expect(raw).toBeDefined();
+            expect(JSON.parse(raw!).signature).toBe('cafebabe');
+            mgr.disconnect();
+        });
+
+        it('unsubscribe sends orderbook payload when connected', async () => {
+            const mgr = new WebSocketManager(wsUrl);
+            const topic = 'OrderBook/AVAX/USDC';
+            mgr.subscribe(topic, jest.fn(), false, {
+                kind: 'orderbook',
+                pair: 'AVAX/USDC',
+                decimal: 4,
+            });
+            mgr.connect();
+            jest.advanceTimersByTime(10);
+            await (mgr as any).sendSubscription(topic);
+            const mockWs = (mgr as any).ws as MockWebSocket;
+            mockWs.sentMessages.length = 0;
+            mgr.unsubscribe(topic);
+            await Promise.resolve();
+            const unsub = mockWs.sentMessages.some((m: string) => m.includes('unsubscribe'));
+            expect(unsub).toBe(true);
+            mgr.disconnect();
         });
     });
 });

@@ -3,8 +3,6 @@ import { Result } from '../../src/utils/result';
 describe('Result', () => {
     describe('constructor with default error parameter', () => {
         it('should create Result with default error=null when error not provided', () => {
-            // This tests the branch coverage for line 9 (default parameter)
-            // Create a result using the private constructor path that uses default error
             const result = Result.ok('test');
             expect(result.success).toBe(true);
             expect(result.data).toBe('test');

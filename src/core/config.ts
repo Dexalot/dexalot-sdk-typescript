@@ -1,6 +1,5 @@
 /**
- * Centralized configuration for DexalotClient.
- * Matches Python SDK's DexalotConfig implementation.
+ * Centralized configuration for DexalotClient (constructor kwargs and environment variables).
  */
 
 import { API_URL } from '../constants.js';
@@ -23,10 +22,10 @@ export interface DexalotConfig {
     /** Connection pool limit per host (default: 30) */
     connectionPoolLimitPerHost: number;
 
-    // Timeouts (in milliseconds)
-    /** Connect timeout in ms (default: 5000) */
+    // Timeouts (seconds; HTTP client uses read timeout as request cap in ms)
+    /** Connect timeout in seconds (default: 5); mirrors Python `timeouts[0]` for env parity */
     timeoutConnect: number;
-    /** Read timeout in ms (default: 30000) */
+    /** Read timeout in seconds (default: 30); used as axios request timeout (×1000 ms) */
     timeoutRead: number;
 
     // Cache
@@ -52,14 +51,18 @@ export interface DexalotConfig {
     retryEnabled: boolean;
     /** Maximum retry attempts (default: 3) */
     retryMaxAttempts: number;
-    /** Initial retry delay in ms (default: 1000) */
+    /** Initial retry delay in seconds (default: 1) */
     retryInitialDelay: number;
-    /** Maximum retry delay in ms (default: 10000) */
+    /** Maximum retry delay in seconds (default: 10) */
     retryMaxDelay: number;
     /** Exponential backoff base (default: 2.0) */
     retryExponentialBase: number;
     /** HTTP status codes to retry on (default: [429, 500, 502, 503, 504]) */
     retryOnStatus: number[];
+    /**
+     * Exception types that trigger HTTP retries when status/network heuristics do not apply.
+     */
+    retryOnExceptions?: Array<new (...args: unknown[]) => unknown>;
 
     // Rate Limiting
     /** Enable rate limiting (default: true) */
@@ -80,9 +83,9 @@ export interface DexalotConfig {
     wsPingInterval: number;
     /** WebSocket ping timeout in seconds (default: 10) */
     wsPingTimeout: number;
-    /** Initial reconnect delay in ms (default: 1000) */
+    /** Initial reconnect delay in seconds (default: 1) */
     wsReconnectInitialDelay: number;
-    /** Maximum reconnect delay in ms (default: 60000) */
+    /** Maximum reconnect delay in seconds (default: 60) */
     wsReconnectMaxDelay: number;
     /** Reconnect exponential base (default: 2.0) */
     wsReconnectExponentialBase: number;
@@ -92,12 +95,11 @@ export interface DexalotConfig {
     // Provider Failover
     /** Enable provider failover (default: true) */
     providerFailoverEnabled: boolean;
-    /** Cooldown in ms before retrying failed provider (default: 60000) */
+    /** Cooldown in seconds before retrying failed provider (default: 60) */
     providerFailoverCooldown: number;
     /** Max failures before marking provider unhealthy (default: 3) */
     providerFailoverMaxFailures: number;
 
-    // New v0.5.7 fields
     /** Enable timestamp-based authentication signatures (default: false) */
     timestampedAuth: boolean;
     /** Clock skew compensation for WebSocket in ms (default: 0) */
@@ -121,9 +123,9 @@ const DEFAULT_CONFIG: DexalotConfig = {
     connectionPoolLimit: 100,
     connectionPoolLimitPerHost: 30,
 
-    // Timeouts
-    timeoutConnect: 5000,
-    timeoutRead: 30000,
+    // Timeouts (seconds)
+    timeoutConnect: 5,
+    timeoutRead: 30,
 
     // Cache
     cacheEnabled: true,
@@ -139,8 +141,8 @@ const DEFAULT_CONFIG: DexalotConfig = {
     // Retry
     retryEnabled: true,
     retryMaxAttempts: 3,
-    retryInitialDelay: 1000,
-    retryMaxDelay: 10000,
+    retryInitialDelay: 1,
+    retryMaxDelay: 10,
     retryExponentialBase: 2.0,
     retryOnStatus: [429, 500, 502, 503, 504],
 
@@ -156,17 +158,16 @@ const DEFAULT_CONFIG: DexalotConfig = {
     wsManagerEnabled: false,
     wsPingInterval: 30,
     wsPingTimeout: 10,
-    wsReconnectInitialDelay: 1000,
-    wsReconnectMaxDelay: 60000,
+    wsReconnectInitialDelay: 1,
+    wsReconnectMaxDelay: 60,
     wsReconnectExponentialBase: 2.0,
     wsReconnectMaxAttempts: 10,
 
     // Provider Failover
     providerFailoverEnabled: true,
-    providerFailoverCooldown: 60000,
+    providerFailoverCooldown: 60,
     providerFailoverMaxFailures: 3,
 
-    // New v0.5.7 fields
     timestampedAuth: false,
     wsTimeOffsetMs: 0,
     erc20BalanceConcurrency: 10,
@@ -207,7 +208,8 @@ export function createConfig(overrides?: Partial<DexalotConfig>): DexalotConfig 
  * - PARENTENV: Environment name
  * - PRIVATE_KEY: Private key for signing
  * - API_BASE_URL_TESTNET / API_BASE_URL_MAINNET: Override API URLs
- * - DEXALOT_*: Various configuration options
+ * - DEXALOT_*: Various configuration options (delays and failover cooldown in seconds;
+ *   `DEXALOT_TIMEOUT_CONNECT` / `DEXALOT_TIMEOUT_READ` in seconds; `DEXALOT_WS_TIME_OFFSET_MS` in ms)
  * 
  * @param overrides - Override values that take precedence over env vars
  * @returns Complete configuration object
@@ -281,6 +283,9 @@ export function loadConfigFromEnv(overrides?: Partial<DexalotConfig>): DexalotCo
     const retryMaxDelay = getEnvFloat('DEXALOT_RETRY_MAX_DELAY');
     if (retryMaxDelay !== undefined) envConfig.retryMaxDelay = retryMaxDelay;
 
+    const retryExponentialBase = getEnvFloat('DEXALOT_RETRY_EXPONENTIAL_BASE');
+    if (retryExponentialBase !== undefined) envConfig.retryExponentialBase = retryExponentialBase;
+
     // Rate Limiting
     const rateLimitEnabled = getEnvBool('DEXALOT_RATE_LIMIT_ENABLED');
     if (rateLimitEnabled !== undefined) envConfig.rateLimitEnabled = rateLimitEnabled;
@@ -307,6 +312,12 @@ export function loadConfigFromEnv(overrides?: Partial<DexalotConfig>): DexalotCo
     if (connectionPoolLimitPerHost !== undefined) {
         envConfig.connectionPoolLimitPerHost = connectionPoolLimitPerHost;
     }
+
+    const timeoutConnect = getEnvInt('DEXALOT_TIMEOUT_CONNECT');
+    if (timeoutConnect !== undefined) envConfig.timeoutConnect = timeoutConnect;
+
+    const timeoutRead = getEnvInt('DEXALOT_TIMEOUT_READ');
+    if (timeoutRead !== undefined) envConfig.timeoutRead = timeoutRead;
 
     // WebSocket
     const wsManagerEnabled = getEnvBool('DEXALOT_WS_MANAGER_ENABLED');
@@ -352,7 +363,6 @@ export function loadConfigFromEnv(overrides?: Partial<DexalotConfig>): DexalotCo
         envConfig.providerFailoverMaxFailures = providerFailoverMaxFailures;
     }
 
-    // New v0.5.7 env vars
     const timestampedAuth = getEnvBool('DEXALOT_TIMESTAMPED_AUTH');
     if (timestampedAuth !== undefined) envConfig.timestampedAuth = timestampedAuth;
 
@@ -396,6 +406,13 @@ export function validateConfig(config: DexalotConfig): void {
                 `privateKey must be 66 characters (including "0x"), got ${config.privateKey.length}`
             );
         }
+    }
+
+    if (config.timeoutConnect < 1) {
+        throw new Error('timeoutConnect must be at least 1');
+    }
+    if (config.timeoutRead < 1) {
+        throw new Error('timeoutRead must be at least 1');
     }
 
     // Validate retry settings

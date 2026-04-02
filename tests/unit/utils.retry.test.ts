@@ -120,6 +120,28 @@ describe('asyncRetry', () => {
             expect(fn).toHaveBeenCalledTimes(1);
         });
 
+        it('should retry when error matches retryOnExceptions', async () => {
+            class TransientApiError extends Error {}
+
+            const fn = jest
+                .fn()
+                .mockRejectedValueOnce(new TransientApiError('wrap'))
+                .mockResolvedValue('ok');
+
+            const retryFn = asyncRetry(fn, {
+                maxAttempts: 3,
+                initialDelay: 0,
+                maxDelay: 0,
+                retryOnNetworkError: false,
+                retryOnExceptions: [TransientApiError],
+            });
+
+            const promise = retryFn();
+            await jest.runAllTimersAsync();
+            await expect(promise).resolves.toBe('ok');
+            expect(fn).toHaveBeenCalledTimes(2);
+        });
+
         it('should exhaust all attempts and throw', async () => {
             // Use asyncRetryResult to avoid throwing and test retry logic more easily
             const networkError = new Error('Network error');

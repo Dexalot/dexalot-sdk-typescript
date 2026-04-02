@@ -1,9 +1,8 @@
 /**
  * Chain alias resolution system.
  *
- * Resolves human-friendly chain names/aliases (e.g., "avax", "fuji testnet")
- * to canonical chain identifiers used by the Dexalot SDK. Matches the
- * Python SDK's resolve_chain_reference() implementation.
+ * Resolves human-friendly chain names and aliases (e.g. "avax", "fuji testnet")
+ * to canonical chain identifiers used by the Dexalot SDK.
  */
 
 import chainAliasesData from '../data/chainAliases.json';

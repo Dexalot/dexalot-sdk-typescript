@@ -1,14 +1,13 @@
 import { Result } from './result.js';
 
 /**
- * Input validation functions returning Result<null>.
- * Matches Python SDK's input_validators.py implementation.
+ * Input validation helpers returning Result<null> for SDK parameters.
  */
 
 // Pre-compiled regex patterns for efficiency
 const ADDRESS_PATTERN = /^0x[a-fA-F0-9]{40}$/;
 const PAIR_PATTERN = /^[A-Z0-9]+\/[A-Z0-9]+$/;
-const ORDER_ID_HEX_PATTERN = /^0x[a-fA-F0-9]{64}$/;
+const ORDER_ID_HEX_BODY_PATTERN = /^[0-9a-fA-F]+$/;
 const TOKEN_SYMBOL_PATTERN = /^[A-Z0-9]{1,10}$/;
 
 /**
@@ -92,7 +91,7 @@ export function validatePairFormat(pair: string, paramName: string = 'pair'): Re
 }
 
 /**
- * Validate order ID format (hex string or bytes).
+ * Validate order ID format (hex, decimal, UTF-8 client id, or 32-byte buffer).
  */
 export function validateOrderIdFormat(
     orderId: string | Uint8Array,
@@ -100,27 +99,58 @@ export function validateOrderIdFormat(
 ): Result<null> {
     if (orderId instanceof Uint8Array) {
         if (orderId.length !== 32) {
-            return Result.fail(`${paramName} bytes must be 32 bytes, got ${orderId.length}`);
+            return Result.fail(
+                `Invalid ${paramName}: bytes must be exactly 32 bytes (bytes32), got ${orderId.length} bytes`
+            );
         }
         return Result.ok(null);
     }
 
     if (typeof orderId !== 'string') {
-        return Result.fail(`${paramName} must be a string or Uint8Array, got ${typeof orderId}`);
+        return Result.fail(`Invalid ${paramName}: must be string or bytes, got ${typeof orderId}`);
     }
 
-    if (!orderId.trim()) {
-        return Result.fail(`${paramName} cannot be empty`);
+    const value = orderId.trim();
+    if (!value) {
+        return Result.fail(`Invalid ${paramName}: cannot be empty`);
     }
 
-    // If it starts with 0x, validate hex format
-    if (orderId.startsWith('0x')) {
-        if (!ORDER_ID_HEX_PATTERN.test(orderId)) {
-            return Result.fail(`${paramName} hex string must be 0x + 64 hex chars, got '${orderId}'`);
+    if (/^0x/i.test(value)) {
+        const hexStr = value.slice(2).toLowerCase();
+        if (!hexStr) {
+            return Result.fail(`Invalid ${paramName}: hex string cannot be empty after '0x'`);
         }
+        if (!ORDER_ID_HEX_BODY_PATTERN.test(hexStr)) {
+            return Result.fail(`Invalid ${paramName}: contains invalid hex characters`);
+        }
+        if (hexStr.length % 2 !== 0) {
+            return Result.fail(
+                `Invalid ${paramName}: hex string must have an even number of characters`
+            );
+        }
+        if (hexStr.length > 64) {
+            return Result.fail(
+                `Invalid ${paramName}: hex string too long for bytes32 (max 64 hex chars), got ${hexStr.length} chars`
+            );
+        }
+        return Result.ok(null);
     }
-    // Otherwise, it's a string ID (client-generated), just check non-empty
-    
+
+    if (/^\d+$/.test(value)) {
+        return Result.ok(null);
+    }
+
+    if (value.length === 64 && ORDER_ID_HEX_BODY_PATTERN.test(value)) {
+        return Result.ok(null);
+    }
+
+    const encoded = new TextEncoder().encode(value);
+    if (encoded.length > 32) {
+        return Result.fail(
+            `Invalid ${paramName}: plain string form must fit in 32 bytes, got ${encoded.length} bytes`
+        );
+    }
+
     return Result.ok(null);
 }
 

@@ -1,6 +1,5 @@
 /**
- * Error sanitization utilities to prevent information leaks.
- * Matches Python SDK's error_sanitizer.py implementation.
+ * Strip paths, URLs, and stack traces from user-facing error strings.
  */
 
 // Patterns to remove from error messages

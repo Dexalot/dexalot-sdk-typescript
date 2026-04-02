@@ -1,9 +1,7 @@
 import { Provider } from 'ethers';
 
 /**
- * Thread-safe nonce management per (chainId, address).
- * Prevents race conditions in transaction submission.
- * Matches Python SDK's AsyncNonceManager implementation.
+ * Per-(chainId, address) nonce sequencing for transaction submission.
  */
 export class AsyncNonceManager {
     private nonces: Map<string, number> = new Map();

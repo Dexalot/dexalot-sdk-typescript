@@ -112,14 +112,14 @@ export class CLOBClient extends BaseClient {
             return !!this.pairs[pair];
         }
 
-        /** Fetch CLOB pairs if needed, then verify pair exists (async parity with Python). */
+        /** Fetch CLOB pairs if needed, then verify the pair exists. */
         public async _ensurePairExistsAsync(pair: string): Promise<boolean> {
             if (this._ensurePairExists(pair)) return true;
             const r = await this.getClobPairs();
             return r.success && !!this.pairs[pair];
         }
 
-        /** Run an op against TradePairs on subnet RPC with provider failover (Python `_get_w3_l1` / `_rpc_call`). */
+        /** Run an operation against TradePairs on the subnet RPC with provider failover. */
         private async _withL1TradePairsContract<T>(fn: (contract: Contract) => Promise<T>): Promise<T> {
             const d = this._tradePairsDeployment();
             if (!d) {
@@ -128,6 +128,153 @@ export class CLOBClient extends BaseClient {
             return this.withRpcFailover(this._dexalotL1DisplayName(), (p) =>
                 fn(this._contractForSigner(p, d.address, d.abi))
             );
+        }
+
+        /** Normalize an order id argument to 32-byte `0x` hex for contract calls. */
+        private _orderIdToBytes32Hex(orderId: string | Uint8Array): string {
+            if (orderId instanceof Uint8Array) {
+                const b = new Uint8Array(32);
+                const len = orderId.length;
+                if (len <= 32) {
+                    b.set(orderId, 32 - len);
+                } else {
+                    b.set(orderId.slice(len - 32));
+                }
+                return ethers.hexlify(b);
+            }
+            const stripped = orderId.trim();
+            if (/^0x/i.test(stripped)) {
+                const hexStr = stripped.slice(2).toLowerCase();
+                if (hexStr.length % 2 !== 0) {
+                    throw new Error('Hex order IDs must have an even number of characters.');
+                }
+                const buf = ethers.getBytes(('0x' + hexStr) as `0x${string}`);
+                return ethers.zeroPadValue(ethers.hexlify(buf), 32);
+            }
+            if (/^\d+$/.test(stripped)) {
+                return ethers.toBeHex(BigInt(stripped), 32);
+            }
+            if (stripped.length === 64 && /^[0-9a-fA-F]+$/.test(stripped)) {
+                return ethers.zeroPadValue(('0x' + stripped) as `0x${string}`, 32);
+            }
+            const enc = new TextEncoder().encode(stripped);
+            if (enc.length > 32) {
+                throw new Error('Plain-string order IDs must fit in 32 bytes.');
+            }
+            const paddedArr = new Uint8Array(32);
+            paddedArr.set(enc);
+            return ethers.hexlify(paddedArr);
+        }
+
+        private _classifyOrderIdInput(orderId: string | Uint8Array): 'internal' | 'ambiguous' | 'client' {
+            if (orderId instanceof Uint8Array) {
+                return 'ambiguous';
+            }
+            const s = orderId.trim();
+            if (/^0x/i.test(s)) {
+                return 'ambiguous';
+            }
+            if (/^\d+$/.test(s)) {
+                return 'internal';
+            }
+            if (s.length === 64 && /^[0-9a-fA-F]+$/.test(s)) {
+                return 'ambiguous';
+            }
+            return 'client';
+        }
+
+        private _buildOrderResolutionSequence(orderId: string | Uint8Array): Array<'internal' | 'client'> {
+            const kind = this._classifyOrderIdInput(orderId);
+            if (kind === 'client') {
+                return ['client'];
+            }
+            return ['internal', 'client'];
+        }
+
+        private _isEmptyOrderData(orderData: unknown[]): boolean {
+            if (!Array.isArray(orderData) || orderData.length === 0) {
+                return true;
+            }
+            const NULL_BYTES32 =
+                '0x0000000000000000000000000000000000000000000000000000000000000000';
+            return DataHexString(String(orderData[0])) === DataHexString(NULL_BYTES32);
+        }
+
+        private async _fetchOrderByInternalId(
+            contract: Contract,
+            inputBytes32: string
+        ): Promise<unknown[] | null> {
+            const raw = await contract.getOrder(inputBytes32);
+            const orderData = raw as unknown[];
+            if (!Array.isArray(orderData)) {
+                return null;
+            }
+            return this._isEmptyOrderData(orderData) ? null : orderData;
+        }
+
+        private async _fetchOrderByClientIdPath(
+            contract: Contract,
+            inputBytes32: string
+        ): Promise<unknown[] | null> {
+            const address = await this.signer!.getAddress();
+            let raw = await contract.getOrderByClientOrderId(address, inputBytes32);
+            let orderData = raw as unknown[];
+            if (Array.isArray(orderData) && !this._isEmptyOrderData(orderData)) {
+                return orderData;
+            }
+            const c = contract as Contract & {
+                getOrderByClientId?: (owner: string, clientId: string) => Promise<unknown[]>;
+            };
+            if (typeof c.getOrderByClientId === 'function') {
+                raw = await c.getOrderByClientId(address, inputBytes32);
+                orderData = raw as unknown[];
+                if (Array.isArray(orderData) && !this._isEmptyOrderData(orderData)) {
+                    return orderData;
+                }
+            }
+            return null;
+        }
+
+        private async _resolveOrderReference(
+            contract: Contract,
+            orderId: string | Uint8Array
+        ): Promise<Result<{ idType: 'internal' | 'client'; orderData: unknown[] }>> {
+            let inputBytes32: string;
+            try {
+                inputBytes32 = this._orderIdToBytes32Hex(orderId);
+            } catch (e: unknown) {
+                const msg = e instanceof Error ? e.message : String(e);
+                return Result.fail(msg);
+            }
+            const attempts = this._buildOrderResolutionSequence(orderId);
+            const errors: string[] = [];
+            for (const attempt of attempts) {
+                try {
+                    const orderData =
+                        attempt === 'internal'
+                            ? await this._fetchOrderByInternalId(contract, inputBytes32)
+                            : await this._fetchOrderByClientIdPath(contract, inputBytes32);
+                    if (orderData) {
+                        return Result.ok({ idType: attempt, orderData });
+                    }
+                } catch (err: unknown) {
+                    errors.push(err instanceof Error ? err.message : String(err));
+                }
+            }
+            if (errors.length > 0) {
+                return Result.fail(errors[0]!);
+            }
+            return Result.fail('Order not found (checked supported ID paths).');
+        }
+
+        private _slotToBytes32Hex(slot: unknown): string {
+            if (typeof slot === 'string' && slot.startsWith('0x')) {
+                return ethers.zeroPadValue(slot as `0x${string}`, 32);
+            }
+            if (typeof slot === 'bigint') {
+                return ethers.toBeHex(slot, 32);
+            }
+            return ethers.zeroPadValue(ethers.hexlify(slot as Uint8Array), 32);
         }
 
         private _getOrCreateWsManager(): WebSocketManager | null {
@@ -232,7 +379,10 @@ export class CLOBClient extends BaseClient {
         /**
          * Place a new order.
          */
-        public async addOrder(req: OrderRequest, waitForReceipt: boolean = true): Promise<Result<{txHash: string, clientOrderId: string}>> {
+        public async addOrder(
+            req: OrderRequest,
+            waitForReceipt: boolean = true
+        ): Promise<Result<{ txHash: string; clientOrderId: string; operation: string }>> {
             if (!this.signer) {
                 return Result.fail('Private key/Signer not configured.');
             }
@@ -307,13 +457,15 @@ export class CLOBClient extends BaseClient {
                         }
                         return Result.ok({
                             txHash: receipt.hash,
-                            clientOrderId: clientOrderId
+                            clientOrderId: clientOrderId,
+                            operation: 'add_order',
                         });
                     }
-                    
+
                     return Result.ok({
                         txHash: tx.hash,
-                        clientOrderId: clientOrderId
+                        clientOrderId: clientOrderId,
+                        operation: 'add_order',
                     });
                 });
             } catch (e) {
@@ -324,7 +476,10 @@ export class CLOBClient extends BaseClient {
         /**
          * Cancel a single order.
          */
-        public async cancelOrder(orderId: string, waitForReceipt: boolean = true): Promise<Result<{txHash: string}>> {
+        public async cancelOrder(
+            orderId: string | Uint8Array,
+            waitForReceipt: boolean = true
+        ): Promise<Result<{ txHash: string; operation: string }>> {
             if (!this.signer) {
                 return Result.fail('Signer not configured.');
             }
@@ -340,19 +495,38 @@ export class CLOBClient extends BaseClient {
 
             try {
                 return await this._withL1TradePairsContract(async (contract) => {
-                    const gasEst = await contract.cancelOrder.estimateGas(orderId);
-                    const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
-                    const tx = await contract.cancelOrder(orderId, { gasLimit });
-                    
+                    const resolved = await this._resolveOrderReference(contract, orderId);
+                    if (!resolved.success || !resolved.data) {
+                        return Result.fail(resolved.error || 'Could not resolve order ID');
+                    }
+                    const { idType, orderData } = resolved.data;
+
+                    let gasEst: bigint;
+                    let tx: TransactionResponse;
+                    if (idType === 'client') {
+                        const clientHex = this._slotToBytes32Hex(orderData[1]);
+                        gasEst = await contract.cancelOrderByClientId.estimateGas(clientHex);
+                        const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
+                        tx = await contract.cancelOrderByClientId(clientHex, { gasLimit });
+                    } else {
+                        const internalHex = this._slotToBytes32Hex(orderData[0]);
+                        gasEst = await contract.cancelOrder.estimateGas(internalHex);
+                        const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
+                        tx = await contract.cancelOrder(internalHex, { gasLimit });
+                    }
+
+                    const operation =
+                        idType === 'client' ? 'cancel_order_by_client_id' : 'cancel_order';
+
                     if (waitForReceipt) {
                         const receipt = await tx.wait();
                         if (!receipt || receipt.status !== 1) {
-                            return Result.fail("Transaction reverted");
+                            return Result.fail('Transaction reverted');
                         }
-                        return Result.ok({ txHash: receipt.hash });
+                        return Result.ok({ txHash: receipt.hash, operation });
                     }
-                    
-                    return Result.ok({ txHash: tx.hash });
+
+                    return Result.ok({ txHash: tx.hash, operation });
                 });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'cancelling order'));
@@ -363,9 +537,9 @@ export class CLOBClient extends BaseClient {
          * Cancel a single open order by client order ID (on-chain).
          */
         public async cancelOrderByClientId(
-            clientOrderId: string,
+            clientOrderId: string | Uint8Array,
             waitForReceipt: boolean = true
-        ): Promise<Result<{ txHash: string; cancelledClientOrderId: string }>> {
+        ): Promise<Result<{ txHash: string; cancelledClientOrderId: string; operation: string }>> {
             if (!this.signer) {
                 return Result.fail('Private key not configured.');
             }
@@ -379,10 +553,15 @@ export class CLOBClient extends BaseClient {
                 return Result.fail('TradePairs contract not initialized.');
             }
 
+            let clientOrderIdBytes: string;
             try {
-                const clientOrderIdBytes = clientOrderId.startsWith('0x')
-                    ? clientOrderId
-                    : Utils.toBytes32(clientOrderId);
+                clientOrderIdBytes = this._orderIdToBytes32Hex(clientOrderId);
+            } catch (e: unknown) {
+                const msg = e instanceof Error ? e.message : String(e);
+                return Result.fail(msg);
+            }
+
+            try {
                 return await this._withL1TradePairsContract(async (contract) => {
                     const gasEst = await contract.cancelOrderByClientId.estimateGas(clientOrderIdBytes);
                     const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
@@ -396,12 +575,14 @@ export class CLOBClient extends BaseClient {
                         return Result.ok({
                             txHash: receipt.hash,
                             cancelledClientOrderId: clientOrderIdBytes,
+                            operation: 'cancel_order_by_client_id',
                         });
                     }
 
                     return Result.ok({
                         txHash: tx.hash,
                         cancelledClientOrderId: clientOrderIdBytes,
+                        operation: 'cancel_order_by_client_id',
                     });
                 });
             } catch (e) {
@@ -412,7 +593,9 @@ export class CLOBClient extends BaseClient {
         /**
          * Cancel all open orders.
          */
-        public async cancelAllOrders(): Promise<Result<{txHash: string}>> {
+        public async cancelAllOrders(): Promise<
+            Result<{ txHash: string; operation: string; cancelledInternalOrderIds: string[] }>
+        > {
             const openOrdersResult = await this.getOpenOrders();
             if (!openOrdersResult.success) {
                 return Result.fail(openOrdersResult.error!);
@@ -427,7 +610,12 @@ export class CLOBClient extends BaseClient {
             return await this.cancelListOrders(ids);
         }
 
-        public async cancelListOrders(orderIds: string[], waitForReceipt: boolean = true): Promise<Result<{txHash: string}>> {
+        public async cancelListOrders(
+            orderIds: string[],
+            waitForReceipt: boolean = true
+        ): Promise<
+            Result<{ txHash: string; operation: string; cancelledInternalOrderIds: string[] }>
+        > {
             if (!this.signer || !this._tradePairsDeployment()) {
                 return Result.fail('Not initialized');
             }
@@ -437,16 +625,21 @@ export class CLOBClient extends BaseClient {
                     const gasEst = await contract.cancelOrderList.estimateGas(orderIds);
                     const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
                     const tx = await contract.cancelOrderList(orderIds, { gasLimit });
-                    
+
+                    const payload = {
+                        cancelledInternalOrderIds: orderIds.slice(),
+                        operation: 'cancel_list_orders' as const,
+                    };
+
                     if (waitForReceipt) {
                         const receipt = await tx.wait();
                         if (!receipt || receipt.status !== 1) {
                             return Result.fail("Transaction reverted");
                         }
-                        return Result.ok({ txHash: receipt.hash });
+                        return Result.ok({ txHash: receipt.hash, ...payload });
                     }
-                    
-                    return Result.ok({ txHash: tx.hash });
+
+                    return Result.ok({ txHash: tx.hash, ...payload });
                 });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'cancelling order list'));
@@ -609,7 +802,7 @@ export class CLOBClient extends BaseClient {
             return { ...headers, "x-signature": fullSig };
         }
 
-        public async getOrder(orderId: string): Promise<Result<any>> {
+        public async getOrder(orderId: string | Uint8Array): Promise<Result<any>> {
             const validationResult = validateOrderIdFormat(orderId, 'orderId');
             if (!validationResult.success) {
                 return Result.fail(validationResult.error!);
@@ -618,33 +811,21 @@ export class CLOBClient extends BaseClient {
             if (!this.signer || !this._tradePairsDeployment()) {
                 return Result.fail('Signer/Contract not initialized');
             }
-            
+
             try {
                 return await this._withL1TradePairsContract(async (contract) => {
-                    const orderIdBytes = orderId.startsWith('0x') ? orderId : Utils.toBytes32(orderId);
-                    const orderData = await contract.getOrder(orderIdBytes);
-                    
-                    const NULL_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
-                    if (DataHexString(orderData[0]) === DataHexString(NULL_BYTES32)) {
-                        try {
-                            const address = await this.signer!.getAddress();
-                            const orderData2 = await contract.getOrderByClientId(address, orderIdBytes);
-                            if (DataHexString(orderData2[0]) !== DataHexString(NULL_BYTES32)) {
-                                return Result.ok(await this._formatOrderData(orderData2));
-                            }
-                        } catch {
-                            // ignore
-                        }
-                        return Result.fail('Order not found');
+                    const resolved = await this._resolveOrderReference(contract, orderId);
+                    if (!resolved.success || !resolved.data) {
+                        return Result.fail(resolved.error || 'Order not found');
                     }
-                    return Result.ok(await this._formatOrderData(orderData));
+                    return Result.ok(await this._formatOrderData(resolved.data.orderData));
                 });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'getting order'));
             }
         }
 
-        public async getOrderByClientId(clientOrderId: string): Promise<Result<any>> {
+        public async getOrderByClientId(clientOrderId: string | Uint8Array): Promise<Result<any>> {
             const validationResult = validateOrderIdFormat(clientOrderId, 'clientOrderId');
             if (!validationResult.success) {
                 return Result.fail(validationResult.error!);
@@ -653,12 +834,24 @@ export class CLOBClient extends BaseClient {
             if (!this.signer || !this._tradePairsDeployment()) {
                 return Result.fail('Signer/Contract not initialized');
             }
-             
+
+            let clientOrderIdBytes: string;
+            try {
+                clientOrderIdBytes = this._orderIdToBytes32Hex(clientOrderId);
+            } catch (e: unknown) {
+                const msg = e instanceof Error ? e.message : String(e);
+                return Result.fail(msg);
+            }
+
             try {
                 return await this._withL1TradePairsContract(async (contract) => {
-                    const clientOrderIdBytes = clientOrderId.startsWith('0x') ? clientOrderId : Utils.toBytes32(clientOrderId);
-                    const address = await this.signer!.getAddress();
-                    const orderData = await contract.getOrderByClientOrderId(address, clientOrderIdBytes);
+                    const orderData = await this._fetchOrderByClientIdPath(
+                        contract,
+                        clientOrderIdBytes
+                    );
+                    if (!orderData) {
+                        return Result.fail('Order not found (Client ID).');
+                    }
                     return Result.ok(await this._formatOrderData(orderData));
                 });
             } catch (e) {
@@ -666,7 +859,10 @@ export class CLOBClient extends BaseClient {
             }
         }
 
-        public async addOrderList(orders: OrderRequest[], waitForReceipt: boolean = true): Promise<Result<{txHash: string, clientOrderIds: string[]}>> {
+        public async addOrderList(
+            orders: OrderRequest[],
+            waitForReceipt: boolean = true
+        ): Promise<Result<{ txHash: string; clientOrderIds: string[]; operation: string }>> {
             if (!this.signer || !this._tradePairsDeployment()) {
                 return Result.fail('Signer/Contract not initialized');
             }
@@ -732,17 +928,38 @@ export class CLOBClient extends BaseClient {
                         if (!receipt || receipt.status !== 1) {
                             return Result.fail("Transaction reverted");
                         }
-                        return Result.ok({ txHash: receipt.hash, clientOrderIds });
+                        return Result.ok({
+                            txHash: receipt.hash,
+                            clientOrderIds,
+                            operation: 'add_order_list',
+                        });
                     }
-                    
-                    return Result.ok({ txHash: tx.hash, clientOrderIds });
+
+                    return Result.ok({
+                        txHash: tx.hash,
+                        clientOrderIds,
+                        operation: 'add_order_list',
+                    });
                 });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'placing batch orders'));
             }
         }
 
-        public async replaceOrder(orderId: string, newPrice: number, newAmount: number, waitForReceipt: boolean = true): Promise<Result<{txHash: string}>> {
+        public async replaceOrder(
+            orderId: string,
+            newPrice: number,
+            newAmount: number,
+            waitForReceipt: boolean = true
+        ): Promise<
+            Result<{
+                txHash: string;
+                operation: string;
+                cancelledClientOrderId: string;
+                cancelledInternalOrderId: string;
+                clientOrderId: string;
+            }>
+        > {
             const orderIdResult = validateOrderIdFormat(orderId, 'orderId');
             if (!orderIdResult.success) {
                 return Result.fail(orderIdResult.error!);
@@ -783,7 +1000,9 @@ export class CLOBClient extends BaseClient {
                 const priceWei = BigInt(Utils.unitConversion(price, pairData.quote_decimals, true));
                 const qtyWei = BigInt(Utils.unitConversion(amount, pairData.base_decimals, true));
                 const newClientOrderId = ethers.hexlify(ethers.randomBytes(32));
-                const orderIdBytes = orderId.startsWith('0x') ? orderId : Utils.toBytes32(orderId);
+                const orderIdBytes = this._slotToBytes32Hex(order.id);
+                const cancelledInternalOrderId = this._slotToBytes32Hex(order.id);
+                const cancelledClientOrderId = this._slotToBytes32Hex(order.clientOrderId);
 
                 if (!this._tradePairsDeployment()) {
                     return Result.fail('TradePairs contract not initialized.');
@@ -805,50 +1024,77 @@ export class CLOBClient extends BaseClient {
                         qtyWei,
                         { gasLimit }
                     );
-                    
+
+                    const payload = {
+                        operation: 'replace_order' as const,
+                        cancelledClientOrderId,
+                        cancelledInternalOrderId,
+                        clientOrderId: newClientOrderId,
+                    };
+
                     if (waitForReceipt) {
                         const receipt = await tx.wait();
                         if (!receipt || receipt.status !== 1) {
                             return Result.fail("Transaction reverted");
                         }
-                        return Result.ok({ txHash: receipt.hash });
+                        return Result.ok({ txHash: receipt.hash, ...payload });
                     }
-                    
-                    return Result.ok({ txHash: tx.hash });
+
+                    return Result.ok({ txHash: tx.hash, ...payload });
                 });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'replacing order'));
             }
         }
 
-        public async cancelListOrdersByClientId(clientOrderIds: string[], waitForReceipt: boolean = true): Promise<Result<{txHash: string}>> {
+        public async cancelListOrdersByClientId(
+            clientOrderIds: string[],
+            waitForReceipt: boolean = true
+        ): Promise<
+            Result<{ txHash: string; operation: string; cancelledClientOrderIds: string[] }>
+        > {
             if (!this.signer || !this._tradePairsDeployment()) {
                 return Result.fail('Signer/Contract not initialized');
             }
-            
+
             try {
-                const ids = clientOrderIds.map(id => id.startsWith('0x') ? id : Utils.toBytes32(id));
+                const ids = clientOrderIds.map((id) => (id.startsWith('0x') ? id : Utils.toBytes32(id)));
+                const payload = {
+                    cancelledClientOrderIds: clientOrderIds.slice(),
+                    operation: 'cancel_list_orders_by_client_id' as const,
+                };
                 return await this._withL1TradePairsContract(async (contract) => {
                     const gasEst = await contract.cancelOrderListByClientIds.estimateGas(ids);
                     const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
                     const tx = await contract.cancelOrderListByClientIds(ids, { gasLimit });
-                    
+
                     if (waitForReceipt) {
                         const receipt = await tx.wait();
                         if (!receipt || receipt.status !== 1) {
                             return Result.fail("Transaction reverted");
                         }
-                        return Result.ok({ txHash: receipt.hash });
+                        return Result.ok({ txHash: receipt.hash, ...payload });
                     }
-                    
-                    return Result.ok({ txHash: tx.hash });
+
+                    return Result.ok({ txHash: tx.hash, ...payload });
                 });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'cancelling orders by client ID'));
             }
         }
 
-        public async cancelAddList(replacements: any[], waitForReceipt: boolean = true): Promise<Result<{txHash: string}>> {
+        public async cancelAddList(
+            replacements: any[],
+            waitForReceipt: boolean = true
+        ): Promise<
+            Result<{
+                txHash: string;
+                operation: string;
+                cancelledClientOrderIds: string[];
+                cancelledInternalOrderIds: string[];
+                clientOrderIds: string[];
+            }>
+        > {
             if (!this.signer || !this._tradePairsDeployment()) {
                 return Result.fail('Signer/Contract not initialized');
             }
@@ -856,20 +1102,25 @@ export class CLOBClient extends BaseClient {
             try {
                 const orderIds: string[] = [];
                 const newOrders: any[] = [];
-                 
+                const cancelledClientOrderIds: string[] = [];
+                const cancelledInternalOrderIds: string[] = [];
+                const newClientOrderIds: string[] = [];
+
                 for (const rep of replacements) {
                     const orderId = rep.order_id;
-                    const orderIdBytes = orderId.startsWith('0x') ? orderId : Utils.toBytes32(orderId);
+                    const orderResult = await this.getOrder(orderId);
+                    if (!orderResult.success) {
+                        return Result.fail(orderResult.error!);
+                    }
+                    const orderDetails = orderResult.data;
+                    const orderIdBytes = this._slotToBytes32Hex(orderDetails.id);
                     orderIds.push(orderIdBytes);
-                    
+                    cancelledInternalOrderIds.push(this._slotToBytes32Hex(orderDetails.id));
+                    cancelledClientOrderIds.push(this._slotToBytes32Hex(orderDetails.clientOrderId));
+
                     let side = rep.side;
                     let pair = rep.pair;
                     if (side == null || !pair) {
-                        const orderResult = await this.getOrder(orderId);
-                        if (!orderResult.success) {
-                            return Result.fail(orderResult.error!);
-                        }
-                        const orderDetails = orderResult.data;
                         if (side == null) side = orderDetails.side;
                         if (!pair) pair = orderDetails.pair;
                     }
@@ -902,7 +1153,8 @@ export class CLOBClient extends BaseClient {
                     const priceWei = BigInt(Utils.unitConversion(price, pairData.quote_decimals, true));
                     const qtyWei = BigInt(Utils.unitConversion(amount, pairData.base_decimals, true));
                     const newClientOrderId = ethers.hexlify(ethers.randomBytes(32));
-                    
+                    newClientOrderIds.push(newClientOrderId);
+
                     newOrders.push([
                         newClientOrderId,
                         pairData.tradePairId,
@@ -915,22 +1167,29 @@ export class CLOBClient extends BaseClient {
                         0
                     ]);
                 }
-                 
+
+                const listPayload = {
+                    operation: 'cancel_add_list' as const,
+                    cancelledClientOrderIds,
+                    cancelledInternalOrderIds,
+                    clientOrderIds: newClientOrderIds,
+                };
+
                 return await this._withL1TradePairsContract(async (contract) => {
                     const gasEst = await contract.cancelAddList.estimateGas(orderIds, newOrders);
                     const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
-                     
+
                     const tx = await contract.cancelAddList(orderIds, newOrders, { gasLimit });
-                    
+
                     if (waitForReceipt) {
                         const receipt = await tx.wait();
                         if (!receipt || receipt.status !== 1) {
                             return Result.fail("Transaction reverted");
                         }
-                        return Result.ok({ txHash: receipt.hash });
+                        return Result.ok({ txHash: receipt.hash, ...listPayload });
                     }
-                    
-                    return Result.ok({ txHash: tx.hash });
+
+                    return Result.ok({ txHash: tx.hash, ...listPayload });
                 });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'cancel add list'));

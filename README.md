@@ -61,6 +61,13 @@ pnpm install
 pnpm run build
 ```
 
+## Package exports
+
+- **`dexalot-sdk`**: Default export `DexalotClient`, plus `DexalotConfig` (type), `createConfig`, `loadConfigFromEnv`, `MemoryCache`, `Result`, secrets vault helpers, `version`, and `getVersion()`.
+- **`dexalot-sdk/internal`**: `BaseClient`, `CLOBClient`, `SwapClient`, `TransferClient`, `Utils`, types, constants, and the rest of the implementation surface for advanced use.
+
+Call `await client.initializeClient()` before trading RPC/API usage, optionally `await client.connect()`, and `await client.close()` when tearing down. Successful on-chain `Result` payloads use camelCase fields such as `txHash`, `operation`, and batch id lists where applicable.
+
 ## Quick Start
 
 ```typescript
@@ -71,7 +78,7 @@ async function main() {
     try {
         // Initialize client
         client = new DexalotClient();
-        const result = await client.initialize();
+        const result = await client.initializeClient();
         
         if (!result.success) {
             console.error(`Initialization failed: ${result.error}`);
@@ -88,7 +95,7 @@ async function main() {
     } finally {
         // Always close the client to clean up resources
         if (client !== null) {
-            client.close();
+            await client.close();
         }
     }
 }
@@ -101,7 +108,7 @@ main().catch(console.error);
 - The SDK is **fully async** - all methods must be awaited
 - All methods return `Result<T>` for consistent error handling
 - Use `async/await` for async contexts
-- Always call `client.close()` when done to clean up resources
+- Always call `await client.close()` when done to clean up resources
 
 ## Usage
 
@@ -116,7 +123,7 @@ async function main() {
         client = new DexalotClient();
         
         // Initialize client (required before other operations)
-        const initResult = await client.initialize();
+        const initResult = await client.initializeClient();
         if (!initResult.success) {
             console.error(`Failed to initialize: ${initResult.error}`);
             return;
@@ -132,7 +139,7 @@ async function main() {
     } finally {
         // Always close the client to clean up resources
         if (client !== null) {
-            client.close();
+            await client.close();
         }
     }
 }
@@ -195,7 +202,7 @@ import DexalotClient from 'dexalot-sdk';
 
 // Caching is enabled by default
 const client = new DexalotClient();
-await client.initialize();
+await client.initializeClient();
 
 // First call fetches from API
 const balances = await client.getAllPortfolioBalances();
@@ -242,7 +249,7 @@ client.invalidateCache('balance'); // Options: 'static', 'semi_static', 'balance
 
 **Static Data (1 hour):**
 - `getEnvironments()`
-- `getMainnets()`
+- `getChains()`
 - `getDeployment()`
 
 **Semi-Static Data (15 minutes):**
@@ -292,8 +299,8 @@ The SDK uses a centralized configuration system (`DexalotConfig`) that supports 
 | `apiBaseUrl` | `string` | Auto-detected | Base URL for Dexalot API (derived from `parentEnv`) |
 | `privateKey` | `string` | `undefined` | Wallet private key for signing transactions |
 | `cacheEnabled` | `boolean` | `true` | Enable/disable all caching behavior |
-| `timeoutConnect` | `number` | `5000` | Connect timeout in milliseconds |
-| `timeoutRead` | `number` | `30000` | Read timeout in milliseconds |
+| `timeoutConnect` | `number` | `5` | Connect timeout in seconds (env parity with Python; axios uses read timeout as the request cap) |
+| `timeoutRead` | `number` | `30` | Read timeout in seconds (axios request timeout = this value × 1000 ms) |
 | `logLevel` | `string` | `"info"` | Logging verbosity (`debug`, `info`, `warn`, `error`) |
 | `logFormat` | `string` | `"console"` | Log output format (`console`, `json`) |
 | `connectionPoolLimit` | `number` | `100` | Total connection pool size across all hosts |
@@ -305,8 +312,8 @@ The SDK uses a centralized configuration system (`DexalotConfig`) that supports 
 |--------|------|---------|-------------|
 | `retryEnabled` | `boolean` | `true` | Enable/disable automatic retry |
 | `retryMaxAttempts` | `number` | `3` | Maximum number of retry attempts |
-| `retryInitialDelay` | `number` | `1000` | Initial delay in milliseconds before first retry |
-| `retryMaxDelay` | `number` | `10000` | Maximum delay in milliseconds between retries |
+| `retryInitialDelay` | `number` | `1` | Initial delay in seconds before first retry |
+| `retryMaxDelay` | `number` | `10` | Maximum delay in seconds between retries |
 | `retryExponentialBase` | `number` | `2.0` | Exponential backoff multiplier |
 | `retryOnStatus` | `number[]` | `[429, 500, 502, 503, 504]` | HTTP status codes that trigger retry |
 
@@ -331,8 +338,8 @@ The SDK uses a centralized configuration system (`DexalotConfig`) that supports 
 | `wsManagerEnabled` | `boolean` | `false` | Enable/disable WebSocket Manager (persistent connections) |
 | `wsPingInterval` | `number` | `30` | Seconds between ping messages |
 | `wsPingTimeout` | `number` | `10` | Seconds to wait for pong before reconnecting |
-| `wsReconnectInitialDelay` | `number` | `1000` | Initial reconnect delay in milliseconds |
-| `wsReconnectMaxDelay` | `number` | `60000` | Maximum reconnect delay in milliseconds |
+| `wsReconnectInitialDelay` | `number` | `1` | Initial reconnect delay in seconds |
+| `wsReconnectMaxDelay` | `number` | `60` | Maximum reconnect delay in seconds |
 | `wsReconnectExponentialBase` | `number` | `2.0` | Exponential backoff multiplier |
 | `wsReconnectMaxAttempts` | `number` | `10` | Maximum reconnection attempts (0 = infinite) |
 
@@ -369,8 +376,8 @@ import DexalotClient, { createConfig } from 'dexalot-sdk';
 
 const config = createConfig({
     parentEnv: "production-multi-subnet",
-    timeoutConnect: 10000,
-    timeoutRead: 60000,
+    timeoutConnect: 10,
+    timeoutRead: 60,
     cacheEnabled: false
 });
 
@@ -398,7 +405,7 @@ Provider failover is **enabled by default**. You can configure it via environmen
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `DEXALOT_PROVIDER_FAILOVER_ENABLED` | Enable/disable failover | `true` |
-| `DEXALOT_PROVIDER_FAILOVER_COOLDOWN` | Milliseconds before retrying failed provider | `60000` |
+| `DEXALOT_PROVIDER_FAILOVER_COOLDOWN` | Seconds before retrying failed provider | `60` |
 | `DEXALOT_PROVIDER_FAILOVER_MAX_FAILURES` | Max failures before marking provider unhealthy | `3` |
 
 ### RPC Provider Override
@@ -455,23 +462,21 @@ import DexalotClient, { createConfig } from 'dexalot-sdk';
 // Configure failover
 const config = createConfig({
     providerFailoverEnabled: true,
-    providerFailoverCooldown: 60000,  // 60 seconds cooldown
+    providerFailoverCooldown: 60,  // 60 seconds cooldown
     providerFailoverMaxFailures: 3,   // Mark unhealthy after 3 failures
 });
 
 const client = new DexalotClient(config);
-await client.initialize();
+await client.initializeClient();
 
-// RPC calls will automatically use failover if primary provider fails
-// No code changes needed - failover is transparent
+// RPC calls use failover automatically when the primary provider fails (if enabled)
 ```
 
-### Backwards Compatibility
+### Provider failover behavior
 
-- If `providerFailoverEnabled=false`, behavior matches the original implementation (single provider)
-- Single provider from API response works as before
-- Environment variable override is optional
-- All existing code paths continue to work
+- With `providerFailoverEnabled: false`, only the primary RPC URL is used (no rotation).
+- When the API returns a single provider entry, the client uses that URL directly.
+- Environment variables can override failover settings as documented above.
 
 ## Observability
 
@@ -528,14 +533,14 @@ The SDK manages several resources that need proper cleanup:
 
 ### Always Close the Client
 
-Always call `client.close()` when you're done with the client to ensure proper resource cleanup:
+Always call `await client.close()` when you're done with the client to ensure proper resource cleanup:
 
 ```typescript
 async function main() {
     let client: DexalotClient | null = null;
     try {
         client = new DexalotClient();
-        await client.initialize();
+        await client.initializeClient();
         
         // Your operations here
         const result = await client.getTokens();
@@ -545,13 +550,13 @@ async function main() {
     } finally {
         // Always close the client in a finally block
         if (client !== null) {
-            client.close();
+            await client.close();
         }
     }
 }
 ```
 
-**Note:** The `close()` method:
+**Note:** The async `close()` method:
 - Closes all HTTP sessions
 - Closes WebSocket connections (if enabled)
 - Resets rate limiters and nonce managers
@@ -572,7 +577,7 @@ async function main() {
     let client: DexalotClient | null = null;
     try {
         client = new DexalotClient();
-        await client.initialize();
+        await client.initializeClient();
         
         // Your async operations here
         const result = await client.getTokens();
@@ -581,7 +586,7 @@ async function main() {
         }
     } finally {
         if (client !== null) {
-            client.close();
+            await client.close();
         }
     }
 }
@@ -600,7 +605,7 @@ import DexalotClient from 'dexalot-sdk';
 const client = new DexalotClient();
 
 // Initialize on startup
-await client.initialize();
+await client.initializeClient();
 
 // Use in routes
 app.get('/tokens', async (req, res) => {
@@ -614,7 +619,7 @@ app.get('/tokens', async (req, res) => {
 
 // Close on shutdown
 process.on('SIGTERM', () => {
-    client.close();
+    void client.close();
 });
 ```
 
@@ -629,7 +634,7 @@ async function main() {
     let client: DexalotClient | null = null;
     try {
         client = new DexalotClient();
-        await client.initialize();
+        await client.initializeClient();
         
         // Fetch multiple orderbooks in parallel
         const pairs = ["AVAX/USDC", "ALOT/USDC", "ETH/USDC"];
@@ -644,7 +649,7 @@ async function main() {
         });
     } finally {
         if (client !== null) {
-            client.close();
+            await client.close();
         }
     }
 }
@@ -884,10 +889,8 @@ The SDK automatically standardizes API response field names to match TypeScript 
 
 ### Benefits
 
-- **Consistent Interface**: Always use camelCase field names in TypeScript
-- **Backward Compatible**: Existing code continues to work
-- **Future-Proof**: Handles API field name variations automatically
-- **No Code Changes**: Transformation happens transparently
+- **Consistent interface**: Field names are exposed in camelCase in TypeScript.
+- **Alias handling**: Common snake_case and alternate keys from the API are normalized automatically.
 
 All API responses are automatically transformed before being returned, so you can always rely on standardized field names.
 
@@ -940,7 +943,7 @@ Automatic nonce management prevents transaction race conditions:
 
 - **Automatic**: Tracks nonces per (chain_id, address) combination
 - **Thread-safe**: Uses async locks for concurrent transactions
-- **Transparent**: No code changes needed
+- **Default-on**: No manual nonce bookkeeping for normal use
 
 The nonce manager is enabled by default and works automatically. It:
 1. Fetches the current nonce from the chain on first use
@@ -990,7 +993,7 @@ async function main() {
             wsManagerEnabled: true
         });
         client = new DexalotClient(config);
-        await client.initialize();
+        await client.initializeClient();
         
         // Subscribe to orderbook updates
         const onOrderbookUpdate = (message: any) => {
@@ -1022,7 +1025,7 @@ async function main() {
     } finally {
         // Always close the client to clean up WebSocket and HTTP sessions
         if (client !== null) {
-            client.close();
+            await client.close();
         }
     }
 }
@@ -1039,8 +1042,8 @@ const config = createConfig({
     wsManagerEnabled: true,
     wsPingInterval: 30,        // Ping every 30 seconds
     wsPingTimeout: 10,         // Wait 10s for pong before reconnecting
-    wsReconnectInitialDelay: 1000,
-    wsReconnectMaxDelay: 60000,
+    wsReconnectInitialDelay: 1,
+    wsReconnectMaxDelay: 60,
     wsReconnectExponentialBase: 2.0,
     wsReconnectMaxAttempts: 10  // 0 = infinite retries
 });

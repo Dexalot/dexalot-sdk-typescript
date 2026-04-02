@@ -5,6 +5,7 @@ module.exports = {
     moduleFileExtensions: ["ts", "js", "json", "node"],
     collectCoverage: true,
     coverageDirectory: "coverage",
+    collectCoverageFrom: ["src/**/*.ts", "!src/**/*.d.ts"],
     coveragePathIgnorePatterns: ["/node_modules/", "/dist/"],
     moduleNameMapper: {
         "^(\\.{1,2}/.*)\\.js$": "$1",

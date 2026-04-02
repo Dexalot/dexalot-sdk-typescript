@@ -52,6 +52,118 @@ describe('SwapClient', () => {
         };
     });
 
+    it('_resolveChainIdResult fails for null and undefined at runtime', () => {
+        expect((client as any)._resolveChainIdResult(null).success).toBe(false);
+        expect((client as any)._resolveChainIdResult(undefined).success).toBe(false);
+    });
+
+    it('_resolveChainIdResult parses numeric string chain id', () => {
+        jest.spyOn(client, 'resolveChainReference').mockReturnValue({ success: false } as any);
+        const r = (client as any)._resolveChainIdResult('  43114  ');
+        expect(r.success).toBe(true);
+        expect(r.data).toBe(43114);
+    });
+
+    it('_resolveChainIdResult uses resolveChainReference error when present', () => {
+        const spy = jest.spyOn(client, 'resolveChainReference').mockReturnValue({
+            success: false,
+            error: 'from resolver',
+        } as any);
+        const r = (client as any)._resolveChainIdResult('SomeChain');
+        expect(r.success).toBe(false);
+        expect(r.error).toBe('from resolver');
+        spy.mockRestore();
+    });
+
+    it('getSwapPairs fails when _resolveChainIdResult fails', async () => {
+        jest.spyOn(client as any, '_resolveChainIdResult').mockReturnValue({
+            success: false,
+            error: 'cannot resolve',
+        });
+        const r = await client.getSwapPairs('Avalanche');
+        expect(r.success).toBe(false);
+        expect(r.error).toContain('cannot resolve');
+    });
+
+    it('executeRFQSwap fails for unknown chain id', async () => {
+        jest.spyOn(client, '_getChainNameFromId').mockReturnValue(null);
+        const q = {
+            secureQuote: {
+                signature: '0xsig',
+                data: { nonceAndMeta: 1, expiry: 1, makerAsset: 1, takerAsset: 1, maker: 1, taker: 1, makerAmount: 1, takerAmount: 1 },
+            },
+            chainId: 999999999,
+        };
+        const r = await client.executeRFQSwap(q);
+        expect(r.success).toBe(false);
+        expect(r.error).toContain('Unknown chain ID');
+    });
+
+    it('executeRFQSwap fails when MainnetRFQ deployment missing', async () => {
+        jest.spyOn(client, '_getChainNameFromId').mockReturnValue('Avalanche');
+        client.deployments = { MainnetRFQ: {} };
+        const q = {
+            secureQuote: {
+                signature: '0xsig',
+                data: { nonceAndMeta: 1, expiry: 1, makerAsset: 1, takerAsset: 1, maker: 1, taker: 1, makerAmount: 1, takerAmount: 1 },
+            },
+            chainId: 43114,
+        };
+        const r = await client.executeRFQSwap(q);
+        expect(r.success).toBe(false);
+        expect(r.error).toContain('RFQ contract not found');
+    });
+
+    it('executeRFQSwap treats missing MainnetRFQ key like empty map', async () => {
+        jest.spyOn(client, '_getChainNameFromId').mockReturnValue('Avalanche');
+        client.deployments = {} as any;
+        const q = {
+            secureQuote: {
+                signature: '0xsig',
+                data: {
+                    nonceAndMeta: 1,
+                    expiry: 1,
+                    makerAsset: 1,
+                    takerAsset: 1,
+                    maker: 1,
+                    taker: 1,
+                    makerAmount: 1,
+                    takerAmount: 1,
+                },
+            },
+            chainId: 43114,
+        };
+        const r = await client.executeRFQSwap(q);
+        expect(r.success).toBe(false);
+        expect(r.error).toMatch(/Available:\s*none/);
+    });
+
+    it('executeRFQSwap includes other MainnetRFQ keys when chain contract missing', async () => {
+        jest.spyOn(client, '_getChainNameFromId').mockReturnValue('Avalanche');
+        client.deployments = {
+            MainnetRFQ: { Fuji: { address: '0xfuji', abi: [] } },
+        };
+        const q = {
+            secureQuote: {
+                signature: '0xsig',
+                data: {
+                    nonceAndMeta: 1,
+                    expiry: 1,
+                    makerAsset: 1,
+                    takerAsset: 1,
+                    maker: 1,
+                    taker: 1,
+                    makerAmount: 1,
+                    takerAmount: 1,
+                },
+            },
+            chainId: 43114,
+        };
+        const r = await client.executeRFQSwap(q);
+        expect(r.success).toBe(false);
+        expect(r.error).toMatch(/Available:\s*Fuji/);
+    });
+
     describe('getSwapPairs', () => {
         it('should fetch from API if cache empty', async () => {
             mockAxios.request.mockResolvedValueOnce({ data: MOCK_PAIRS });
@@ -75,10 +187,35 @@ describe('SwapClient', () => {
             expect(result.error).toContain('fetching RFQ pairs');
         });
 
-        it('should fail validation for invalid chainId', async () => {
+        it('should fail validation for invalid chainIdentifier', async () => {
             const result = await client.getSwapPairs(-1);
             expect(result.success).toBe(false);
-            expect(result.error).toContain('chainId');
+            expect(result.error).toContain('chainIdentifier');
+        });
+
+        it('should resolve chain display name to chain id', async () => {
+            mockAxios.request.mockResolvedValueOnce({ data: MOCK_PAIRS });
+            const result = await client.getSwapPairs('Avalanche');
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual(MOCK_PAIRS);
+        });
+
+        it('should fail when chain name cannot be resolved', async () => {
+            const result = await client.getSwapPairs('UnknownChainXYZ');
+            expect(result.success).toBe(false);
+            expect(result.error).toBeDefined();
+        });
+
+        it('uses fallback message when chain resolution fails without error text', async () => {
+            const spy = jest.spyOn(client as any, '_resolveChainIdResult').mockReturnValue({
+                success: false,
+                data: null,
+                error: '',
+            });
+            const r = await client.getSwapPairs('Avalanche');
+            expect(r.success).toBe(false);
+            expect(r.error).toContain("Could not resolve chain identifier 'Avalanche'");
+            spy.mockRestore();
         });
     });
 
@@ -157,7 +294,7 @@ describe('SwapClient', () => {
             expect(transformed.secureQuote.data.nonceAndMeta).toBe(1);
         });
 
-        it('should handle order field (legacy)', () => {
+        it('should handle top-level order field on quotes', () => {
             const quote = {
                 chainid: 43114,
                 securequote: {
@@ -486,12 +623,12 @@ describe('SwapClient', () => {
 
              const result = await client.executeRFQSwap(quote);
              expect(result.success).toBe(true);
-             expect(result.data?.tx_hash).toBe('txHash');
+             expect(result.data?.txHash).toBe('txHash');
              expect(result.data?.operation).toBe('execute_rfq_swap');
              expect(mockContract.simpleSwap).toHaveBeenCalled();
         });
 
-        it('should handle legacy quote structure (order field)', async () => {
+        it('should handle quote payload with order field', async () => {
              const mockContract = { 
                  simpleSwap: jest.fn().mockResolvedValue({ 
                      hash: 'txHash',
@@ -504,7 +641,7 @@ describe('SwapClient', () => {
                  chainid: 43114,
                  securequote: {
                      signature: '0xSig',
-                     order: { // Legacy field
+                     order: {
                          nonceAndMeta: 1, expiry: 1, makerAsset: '0xM', takerAsset: '0xT',
                          maker: '0xMkr', taker: '0xTkr', makerAmount: 1, takerAmount: 1
                      }
@@ -668,7 +805,7 @@ describe('SwapClient', () => {
             const result = await client.executeRFQSwap(quote, false);
             
             expect(result.success).toBe(true);
-            expect(result.data?.tx_hash).toBe('txHash');
+            expect(result.data?.txHash).toBe('txHash');
             expect(result.data?.operation).toBe('execute_rfq_swap');
             expect(mockContract.simpleSwap).toHaveBeenCalled();
         });

@@ -207,6 +207,10 @@ describe('inputValidators', () => {
             expect(validateOrderIdFormat('client-order-123').success).toBe(true);
         });
 
+        it('should accept decimal digit-only order id strings', () => {
+            expect(validateOrderIdFormat('123456789').success).toBe(true);
+        });
+
         it('should reject empty strings', () => {
             const result = validateOrderIdFormat('');
             expect(result.success).toBe(false);
@@ -216,7 +220,36 @@ describe('inputValidators', () => {
         it('should reject non-string non-Uint8Array', () => {
             const result = validateOrderIdFormat(123 as any);
             expect(result.success).toBe(false);
-            expect(result.error).toContain('string or Uint8Array');
+            expect(result.error).toContain('string or bytes');
+        });
+
+        it('should reject 0x with empty hex body', () => {
+            const result = validateOrderIdFormat('0x', 'id');
+            expect(result.success).toBe(false);
+            expect(result.error).toContain("cannot be empty after '0x'");
+        });
+
+        it('should reject hex body with invalid characters', () => {
+            const result = validateOrderIdFormat('0x' + 'g'.repeat(64), 'id');
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('invalid hex');
+        });
+
+        it('should reject 0x hex longer than bytes32', () => {
+            const result = validateOrderIdFormat('0x' + 'a'.repeat(66), 'id');
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('too long');
+        });
+
+        it('should accept 64-char hex without 0x prefix', () => {
+            expect(validateOrderIdFormat('a'.repeat(64), 'id').success).toBe(true);
+        });
+
+        it('should reject plain string longer than 32 bytes', () => {
+            const long = 'x'.repeat(33);
+            const result = validateOrderIdFormat(long, 'id');
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('32 bytes');
         });
     });
 

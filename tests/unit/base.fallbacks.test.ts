@@ -45,7 +45,7 @@ describe('BaseClient - Configuration Fallbacks', () => {
         });
     });
 
-    describe('Constructor with Signer (legacy)', () => {
+    describe('Constructor with Signer', () => {
         it('should use MAINNET API_URL when parentEnv contains "production"', () => {
             const mockSigner = {
                 getAddress: jest.fn().mockResolvedValue('0xAddress'),

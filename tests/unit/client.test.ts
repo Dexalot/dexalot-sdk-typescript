@@ -1,4 +1,5 @@
 import { DexalotClient } from '../../src/core/client';
+import { Utils } from '../../src/utils';
 import { ethers } from 'ethers';
 
 // Mock ethers
@@ -11,6 +12,15 @@ describe('DexalotClient', () => {
     beforeEach(() => {
         // Reset mocks
         jest.clearAllMocks();
+    });
+
+    it('unitConversion static covers toBase true and false', () => {
+        const spy = jest.spyOn(Utils, 'unitConversion').mockReturnValue('ok');
+        expect(DexalotClient.unitConversion('1', 18, true)).toBe('ok');
+        expect(DexalotClient.unitConversion('1', 18, false)).toBe('ok');
+        expect(spy).toHaveBeenCalledWith('1', 18, true);
+        expect(spy).toHaveBeenCalledWith('1', 18, false);
+        spy.mockRestore();
     });
 
     it('should initialize correctly', () => {

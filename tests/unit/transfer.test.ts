@@ -94,7 +94,7 @@ describe('TransferClient', () => {
 
         client = new TestClient(mockSigner);
         
-        // Manual setup of client properties that usually come from initialize()
+        // Manual setup of client properties that usually come from initializeClient()
         client.portfolioSubContractView = mockContract; 
         client.portfolioMainContracts = { 'Avalanche': mockContract }; // Per-chain contracts
         client.portfolioSubContract = mockContract;
@@ -359,10 +359,17 @@ describe('TransferClient', () => {
     });
 
     describe('transferToken', () => {
-        it('should alias to transferPortfolio', async () => {
-             const spy = jest.spyOn(client, 'transferPortfolio').mockResolvedValue({} as any);
-             await client.transferToken('AVAX', '0xTo', 10);
-             expect(spy).toHaveBeenCalledWith('AVAX', 10, '0xTo');
+        it('should call transferPortfolio with (token, toAddress, amount) and return message string', async () => {
+            const toAddr = '0x1234567890123456789012345678901234567890';
+            jest.spyOn(client, 'transferPortfolio').mockResolvedValue({
+                success: true,
+                data: { txHash: '0xabc', operation: 'transfer_portfolio' },
+                error: null,
+            } as any);
+            const result = await client.transferToken('AVAX', toAddr, 10);
+            expect(client.transferPortfolio).toHaveBeenCalledWith('AVAX', 10, toAddr, true);
+            expect(result.success).toBe(true);
+            expect(result.data).toContain('0xabc');
         });
     });
 
@@ -1084,8 +1091,31 @@ describe('TransferClient', () => {
          });
     });
 
+    describe('getDepositBridgeFee', () => {
+        it('should return bridge fee in native units', async () => {
+            mockContract.portfolioBridge.mockResolvedValue('0xBridgeAddr');
+            const result = await client.getDepositBridgeFee('AVAX', 10, 'Avalanche');
+            expect(result.success).toBe(true);
+            expect(result.data).toBeCloseTo(1000 / 1e18, 12);
+        });
+
+        it('should fail without signer', async () => {
+            client.signer = undefined as any;
+            const result = await client.getDepositBridgeFee('AVAX', 1, 'Avalanche');
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Signer required');
+        });
+
+        it('should fail when token not on source chain', async () => {
+            client.tokenData = {};
+            const result = await client.getDepositBridgeFee('AVAX', 1, 'Avalanche');
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('not supported');
+        });
+    });
+
     describe('Branch Coverage - Fallbacks', () => {
-        it('deposit should use "ETH" when native_symbol missing (line 56)', async () => {
+        it('deposit should use "ETH" when native_symbol missing', async () => {
             // Chain config without native_symbol
             client.chainConfig = {
                 'Ethereum': { chain_id: 1, env: ENV.PROD_MULTI_AVAX } as any // No native_symbol
@@ -1107,7 +1137,7 @@ describe('TransferClient', () => {
             expect(mockContract.depositNative).toHaveBeenCalled();
         });
 
-        it('deposit should return error when token address not found (chainEnv null - line 75)', async () => {
+        it('deposit should return error when token address not found (chainEnv null)', async () => {
             client.chainConfig = {
                 'Ethereum': { chain_id: 1 } as any // No env property
             };
@@ -1127,7 +1157,7 @@ describe('TransferClient', () => {
             expect(result.error).toContain('Token address for USDC not found on Ethereum');
         });
 
-        it('_getBridgeFee should use signer when portfolioContract.runner missing (line 354)', async () => {
+        it('_getBridgeFee should use signer when portfolioContract.runner missing', async () => {
             // Contract without runner but with portfolioBridge
             const contractNoRunner = {
                 ...mockContract,
@@ -1142,7 +1172,7 @@ describe('TransferClient', () => {
             expect(fee).toBe(100n);
         });
 
-        it('_getBridgeFee should use provider when signer also missing (line 354)', async () => {
+        it('_getBridgeFee should use provider when signer also missing', async () => {
             const contractNoRunner = {
                 ...mockContract,
                 runner: null,
@@ -1158,7 +1188,7 @@ describe('TransferClient', () => {
             expect(fee).toBe(50n);
         });
 
-        it('_getBridgeFee should return 0n when signer.getAddress fails (line 356 catch path)', async () => {
+        it('_getBridgeFee should return 0n when signer.getAddress fails', async () => {
             const contractNoRunner = {
                 ...mockContract,
                 runner: null,
@@ -1174,7 +1204,7 @@ describe('TransferClient', () => {
             expect(fee).toBe(0n);
         });
 
-        it('_getBridgeFee should use subnetChainId fallback of 0 (line 360)', async () => {
+        it('_getBridgeFee should use subnetChainId fallback of 0', async () => {
             client.subnetChainId = undefined as any; // No subnetChainId
 
             mockContract.portfolioBridge.mockResolvedValue('0xBridgeAddr');
@@ -1183,7 +1213,6 @@ describe('TransferClient', () => {
 
             const fee = await client._getBridgeFee(mockContract as any, 1, '0xSym', 100n);
             expect(fee).toBe(25n);
-            // Check it was called with 0 as subnetChainId
             expect(mockBridge.getBridgeFee).toHaveBeenCalledWith(
                 1, 0, '0xSym', 100n, expect.any(String), '0x00'
             );
@@ -1191,7 +1220,7 @@ describe('TransferClient', () => {
     });
 
     describe('decimals fallback from subnetChainId to chainId', () => {
-        it('getPortfolioBalance should use chainId decimals when subnetChainId decimals not found (line 50)', async () => {
+        it('getPortfolioBalance should use chainId decimals when subnetChainId decimals not found', async () => {
             mockContract.getBalance.mockResolvedValue([100n, 50n, 50n]);
             // Token only has decimals for chainId (43114), NOT for subnetChainId (12345)
             client.tokenData = {
@@ -1208,7 +1237,7 @@ describe('TransferClient', () => {
             // then _getTokenDecimals(SPECIAL, 43114) returns 8
         });
 
-        it('getAllPortfolioBalances should use chainId decimals when subnetChainId decimals not found (line 650)', async () => {
+        it('getAllPortfolioBalances should use chainId decimals when subnetChainId decimals not found', async () => {
             // Return one page with a symbol, then empty page to stop
             mockContract.getBalances
                 .mockResolvedValueOnce([['0xSpecial'], [200n], [150n]])
@@ -1231,7 +1260,7 @@ describe('TransferClient', () => {
             expect(result.data!['SPECIAL']).toBeDefined();
         });
 
-        it('getPortfolioBalance should fallback to 18 decimals when token unknown on all chains (line 50 ?? 18)', async () => {
+        it('getPortfolioBalance should fallback to 18 decimals when token unknown on all chains', async () => {
             mockContract.getBalance.mockResolvedValue([100n, 50n, 50n]);
             // Empty tokenData so _getTokenDecimals returns null for every chainId
             client.tokenData = {};
@@ -1245,7 +1274,7 @@ describe('TransferClient', () => {
             expect(result.data!.total).toBe(10); // Mocked Utils returns '10'
         });
 
-        it('getAllPortfolioBalances should fallback to 18 decimals when token unknown on all chains (line 650 ?? 18)', async () => {
+        it('getAllPortfolioBalances should fallback to 18 decimals when token unknown on all chains', async () => {
             mockContract.getBalances
                 .mockResolvedValueOnce([['0xNoToken'], [300n], [200n]])
                 .mockResolvedValueOnce([[], [], []]);

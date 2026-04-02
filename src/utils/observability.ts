@@ -1,7 +1,5 @@
 /**
- * Lightweight observability utilities.
- * Zero external dependencies - uses console API and AsyncLocalStorage.
- * Matches Python SDK's observability.py patterns.
+ * Structured logging helpers (console + optional AsyncLocalStorage request IDs).
  */
 
 // Use AsyncLocalStorage for request ID tracking if available (Node.js 12.17+)
@@ -173,9 +171,8 @@ export function getLogger(name: string): Logger {
 }
 
 /**
- * Track an operation with timing.
- * Matches Python SDK's @track_operation decorator behavior.
- * 
+ * Track an operation with timing (start, success with duration, or failure).
+ *
  * @param logger - Logger to use
  * @param operation - Operation name
  * @param fn - Async function to execute
@@ -208,9 +205,8 @@ export async function trackOperation<T>(
 }
 
 /**
- * Create a method decorator for tracking.
- * Matches Python SDK's @track_method(component) pattern.
- * 
+ * Method decorator that logs entry, duration, and errors with a component tag.
+ *
  * Note: TypeScript decorators are experimental. Use this with
  * `experimentalDecorators: true` in tsconfig.json.
  * 

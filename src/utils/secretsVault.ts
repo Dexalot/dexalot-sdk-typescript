@@ -1,9 +1,8 @@
 /**
  * Encrypted key-value secrets vault backed by SQLite.
  *
- * Uses Fernet symmetric encryption (AES-128-CBC + HMAC-SHA256) for full
- * interoperability with the Python SDK's secrets vault. Vault files created
- * by either SDK can be read by the other.
+ * Uses Fernet symmetric encryption (AES-128-CBC + HMAC-SHA256) in the standard
+ * Dexalot operator vault wire format so vault files are portable across tooling.
  *
  * The vault file is created with owner-only permissions (0o600).
  *
@@ -97,9 +96,28 @@ function fernetDecrypt(token: Buffer, fernetKeyB64: string): string {
 
 // ---------- Vault Operations ----------
 
+/** Home directory for tilde expansion: env (like a shell) first, then `os.homedir()`. */
+function tildeHomeDir(): string {
+    if (process.platform === 'win32') {
+        const fromEnv =
+            process.env.USERPROFILE ||
+            (process.env.HOMEDRIVE && process.env.HOMEPATH
+                ? process.env.HOMEDRIVE + process.env.HOMEPATH
+                : '');
+        if (fromEnv) return fromEnv;
+    } else if (process.env.HOME) {
+        return process.env.HOME;
+    }
+    return os.homedir();
+}
+
 function expandPath(p: string): string {
-    if (p.startsWith('~')) {
-        return path.join(os.homedir(), p.slice(1));
+    const home = tildeHomeDir();
+    if (p === '~') {
+        return home;
+    }
+    if (p.startsWith('~/') || p.startsWith('~\\')) {
+        return path.join(home, p.slice(2));
     }
     return path.resolve(p);
 }

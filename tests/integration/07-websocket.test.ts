@@ -22,7 +22,7 @@ describe('Integration: WebSocket', () => {
             /* ignore */
         }
         await client.closeWebsocket(1);
-        client.close();
+        await client.close();
     }, 15000);
 
     it('connects, subscribes to order book, and receives orderBooks payloads', async () => {

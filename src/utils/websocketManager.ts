@@ -1,9 +1,6 @@
 /**
- * WebSocket manager for persistent connections.
- * Matches Python SDK's WebSocketManager implementation.
- * 
- * Note: This module uses the 'ws' package for Node.js environments.
- * In browser environments, the native WebSocket API is used.
+ * WebSocket manager for persistent Dexalot streaming connections.
+ * Uses the `ws` package on Node and the native WebSocket API in browsers.
  */
 
 import { getLogger } from './observability.js';
@@ -31,14 +28,14 @@ type WsConnection = {
 
 export type MessageCallback = (data: any) => void;
 
-/** Optional Dexalot private-topic auth (matches Python WebSocketManager). */
+/** Optional Dexalot private-topic signing hooks (address + signMessage). */
 export interface WebSocketDexalotAuth {
     getAddress(): Promise<string>;
     signMessage(message: string): Promise<string>;
 }
 
 export interface WebSocketDexalotOptions {
-    /** Milliseconds added to auth timestamp (clock skew), default from env parity */
+    /** Milliseconds added to auth timestamp for clock skew (see `DEXALOT_WS_TIME_OFFSET_MS`). */
     wsTimeOffsetMs?: number;
     auth?: WebSocketDexalotAuth;
 }
@@ -48,9 +45,9 @@ export interface WebSocketConfig {
     pingInterval?: number;
     /** Seconds to wait for pong before reconnecting (default: 10) */
     pingTimeout?: number;
-    /** Initial reconnect delay in ms (default: 1000) */
+    /** Initial reconnect delay in seconds (default: 1) */
     reconnectInitialDelay?: number;
-    /** Maximum reconnect delay in ms (default: 60000) */
+    /** Maximum reconnect delay in seconds (default: 60) */
     reconnectMaxDelay?: number;
     /** Exponential backoff multiplier (default: 2.0) */
     reconnectExponentialBase?: number;
@@ -61,8 +58,8 @@ export interface WebSocketConfig {
 const DEFAULT_CONFIG: Required<WebSocketConfig> = {
     pingInterval: 30,
     pingTimeout: 10,
-    reconnectInitialDelay: 1000,
-    reconnectMaxDelay: 60000,
+    reconnectInitialDelay: 1,
+    reconnectMaxDelay: 60,
     reconnectExponentialBase: 2.0,
     reconnectMaxAttempts: 10,
 };
@@ -94,8 +91,7 @@ export class WebSocketManager {
     private readonly wsUrl: string;
     private readonly config: Required<WebSocketConfig>;
     private readonly dexalot: WebSocketDexalotOptions;
-    /** Legacy static signature for private topics when `dexalot.auth` is not set. */
-    private legacyAuthSignature: string | null = null;
+    private staticAuthSignature: string | null = null;
 
     constructor(wsUrl: string, config: WebSocketConfig = {}, dexalot: WebSocketDexalotOptions = {}) {
         this.wsUrl = wsUrl;
@@ -104,11 +100,11 @@ export class WebSocketManager {
     }
 
     /**
-     * Set a static signature for private subscriptions (tests / simple integrations).
-     * When `dexalot.auth` is provided in the constructor, that takes precedence.
+     * Set the signature used for private topic subscriptions when `dexalot.auth` is not set.
+     * If both are present, `dexalot.auth` (timestamped subscribe payload) takes precedence.
      */
     setAuthSignature(signature: string): void {
-        this.legacyAuthSignature = signature;
+        this.staticAuthSignature = signature;
     }
 
     /**
@@ -316,12 +312,12 @@ export class WebSocketManager {
             return;
         }
 
-        if (sub.isPrivate && this.legacyAuthSignature) {
+        if (sub.isPrivate && this.staticAuthSignature) {
             this.ws.send(
                 JSON.stringify({
                     type: 'subscribe',
                     topic,
-                    signature: this.legacyAuthSignature,
+                    signature: this.staticAuthSignature,
                 })
             );
             return;
@@ -406,19 +402,20 @@ export class WebSocketManager {
         this.state = 'reconnecting';
         this.reconnectAttempts++;
 
-        const delay = Math.min(
+        const delaySec = Math.min(
             this.config.reconnectInitialDelay *
                 Math.pow(this.config.reconnectExponentialBase, this.reconnectAttempts - 1),
             this.config.reconnectMaxDelay
         );
+        const delayMs = Math.max(0, Math.round(delaySec * 1000));
 
         wsLogger.debug(
-            `Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`
+            `Reconnecting in ${delayMs}ms (attempt ${this.reconnectAttempts})`
         );
 
         this.reconnectTimer = setTimeout(() => {
             this.connect();
-        }, delay);
+        }, delayMs);
     }
 
     /**

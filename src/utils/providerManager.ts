@@ -25,9 +25,7 @@ const DEFAULT_CONFIG: Required<ProviderManagerConfig> = {
 };
 
 /**
- * RPC provider failover manager.
- * Tracks provider health and automatically fails over to healthy providers.
- * Matches Python SDK's ProviderManager implementation.
+ * RPC provider failover: health tracking and automatic fallback between URLs.
  */
 export class ProviderManager {
     private providers: Map<string, JsonRpcProvider[]> = new Map();

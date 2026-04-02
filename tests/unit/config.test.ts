@@ -18,6 +18,13 @@ describe('config', () => {
             
             expect(config.parentEnv).toBe('fuji-multi');
             expect(config.retryMaxAttempts).toBe(3);
+            expect(config.retryInitialDelay).toBe(1);
+            expect(config.retryMaxDelay).toBe(10);
+            expect(config.timeoutConnect).toBe(5);
+            expect(config.timeoutRead).toBe(30);
+            expect(config.wsReconnectInitialDelay).toBe(1);
+            expect(config.wsReconnectMaxDelay).toBe(60);
+            expect(config.providerFailoverCooldown).toBe(60);
             expect(config.rateLimitEnabled).toBe(true);
             expect(config.cacheEnabled).toBe(true);
         });
@@ -30,7 +37,7 @@ describe('config', () => {
             
             expect(config.parentEnv).toBe('prod-multi');
             expect(config.retryMaxAttempts).toBe(5);
-            expect(config.retryInitialDelay).toBe(1000); // Still default
+            expect(config.retryInitialDelay).toBe(1); // Still default
         });
 
         it('should auto-detect testnet API URL', () => {
@@ -104,15 +111,17 @@ describe('config', () => {
         it('should load retry settings', () => {
             process.env.DEXALOT_RETRY_ENABLED = 'false';
             process.env.DEXALOT_RETRY_MAX_ATTEMPTS = '5';
-            process.env.DEXALOT_RETRY_INITIAL_DELAY = '2000';
-            process.env.DEXALOT_RETRY_MAX_DELAY = '20000';
+            process.env.DEXALOT_RETRY_INITIAL_DELAY = '2';
+            process.env.DEXALOT_RETRY_MAX_DELAY = '20';
+            process.env.DEXALOT_RETRY_EXPONENTIAL_BASE = '3';
             
             const config = loadConfigFromEnv();
             
             expect(config.retryEnabled).toBe(false);
             expect(config.retryMaxAttempts).toBe(5);
-            expect(config.retryInitialDelay).toBe(2000);
-            expect(config.retryMaxDelay).toBe(20000);
+            expect(config.retryInitialDelay).toBe(2);
+            expect(config.retryMaxDelay).toBe(20);
+            expect(config.retryExponentialBase).toBe(3);
         });
 
         it('should load rate limit settings', () => {
@@ -131,8 +140,8 @@ describe('config', () => {
             process.env.DEXALOT_WS_MANAGER_ENABLED = 'true';
             process.env.DEXALOT_WS_PING_INTERVAL = '60';
             process.env.DEXALOT_WS_PING_TIMEOUT = '20';
-            process.env.DEXALOT_WS_RECONNECT_INITIAL_DELAY = '2000';
-            process.env.DEXALOT_WS_RECONNECT_MAX_DELAY = '120000';
+            process.env.DEXALOT_WS_RECONNECT_INITIAL_DELAY = '2';
+            process.env.DEXALOT_WS_RECONNECT_MAX_DELAY = '120';
             process.env.DEXALOT_WS_RECONNECT_EXPONENTIAL_BASE = '3.0';
             process.env.DEXALOT_WS_RECONNECT_MAX_ATTEMPTS = '5';
             
@@ -141,21 +150,21 @@ describe('config', () => {
             expect(config.wsManagerEnabled).toBe(true);
             expect(config.wsPingInterval).toBe(60);
             expect(config.wsPingTimeout).toBe(20);
-            expect(config.wsReconnectInitialDelay).toBe(2000);
-            expect(config.wsReconnectMaxDelay).toBe(120000);
+            expect(config.wsReconnectInitialDelay).toBe(2);
+            expect(config.wsReconnectMaxDelay).toBe(120);
             expect(config.wsReconnectExponentialBase).toBe(3.0);
             expect(config.wsReconnectMaxAttempts).toBe(5);
         });
 
         it('should load provider failover settings', () => {
             process.env.DEXALOT_PROVIDER_FAILOVER_ENABLED = 'false';
-            process.env.DEXALOT_PROVIDER_FAILOVER_COOLDOWN = '120000';
+            process.env.DEXALOT_PROVIDER_FAILOVER_COOLDOWN = '120';
             process.env.DEXALOT_PROVIDER_FAILOVER_MAX_FAILURES = '5';
             
             const config = loadConfigFromEnv();
             
             expect(config.providerFailoverEnabled).toBe(false);
-            expect(config.providerFailoverCooldown).toBe(120000);
+            expect(config.providerFailoverCooldown).toBe(120);
             expect(config.providerFailoverMaxFailures).toBe(5);
         });
 
@@ -211,7 +220,15 @@ describe('config', () => {
             const config = loadConfigFromEnv();
 
             // Should use default
-            expect(config.retryInitialDelay).toBe(1000);
+            expect(config.retryInitialDelay).toBe(1);
+        });
+
+        it('should load HTTP timeout settings from env', () => {
+            process.env.DEXALOT_TIMEOUT_CONNECT = '8';
+            process.env.DEXALOT_TIMEOUT_READ = '45';
+            const config = loadConfigFromEnv();
+            expect(config.timeoutConnect).toBe(8);
+            expect(config.timeoutRead).toBe(45);
         });
 
         it('should load timestampedAuth from env', () => {
@@ -257,8 +274,13 @@ describe('config', () => {
         it('should validate retry settings', () => {
             expect(() => createConfig({ retryMaxAttempts: 0 })).toThrow('retryMaxAttempts must be at least 1');
             expect(() => createConfig({ retryInitialDelay: -1 })).toThrow('retryInitialDelay must be non-negative');
-            expect(() => createConfig({ retryMaxDelay: 100, retryInitialDelay: 200 })).toThrow('retryMaxDelay must be >= retryInitialDelay');
+            expect(() => createConfig({ retryMaxDelay: 1, retryInitialDelay: 2 })).toThrow('retryMaxDelay must be >= retryInitialDelay');
             expect(() => createConfig({ retryExponentialBase: 0.5 })).toThrow('retryExponentialBase must be >= 1.0');
+        });
+
+        it('should validate HTTP timeouts', () => {
+            expect(() => createConfig({ timeoutConnect: 0 })).toThrow('timeoutConnect must be at least 1');
+            expect(() => createConfig({ timeoutRead: 0 })).toThrow('timeoutRead must be at least 1');
         });
 
         it('should validate rate limit settings', () => {
@@ -280,8 +302,8 @@ describe('config', () => {
             expect(() => createConfig({ wsPingTimeout: 0 })).toThrow('wsPingTimeout must be at least 1');
             expect(() => createConfig({ wsReconnectInitialDelay: -1 })).toThrow('wsReconnectInitialDelay must be non-negative');
             expect(() => createConfig({ 
-                wsReconnectMaxDelay: 100, 
-                wsReconnectInitialDelay: 200 
+                wsReconnectMaxDelay: 1, 
+                wsReconnectInitialDelay: 2 
             })).toThrow('wsReconnectMaxDelay must be >= wsReconnectInitialDelay');
             expect(() => createConfig({ wsReconnectExponentialBase: 0.5 })).toThrow('wsReconnectExponentialBase must be >= 1.0');
             expect(() => createConfig({ wsReconnectMaxAttempts: -1 })).toThrow('wsReconnectMaxAttempts must be non-negative');

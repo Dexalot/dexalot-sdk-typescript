@@ -28,7 +28,7 @@ describe('Integration: Provider RPC list & failover', () => {
     function fujiChainName(c: DexalotClient): string {
         const name = Object.entries(c.chainConfig).find(([, cfg]) => cfg.chain_id === FUJI_CHAIN_ID)?.[0];
         if (!name) {
-            throw new Error(`No chain with chain_id ${FUJI_CHAIN_ID} in chainConfig after initialize()`);
+            throw new Error(`No chain with chain_id ${FUJI_CHAIN_ID} in chainConfig after initializeClient()`);
         }
         return name;
     }
@@ -45,7 +45,7 @@ describe('Integration: Provider RPC list & failover', () => {
             expect(pm!.getProviderCount(chainName)).toBeGreaterThanOrEqual(2);
             console.log(`✅ Provider list for ${chainName}: count=${pm!.getProviderCount(chainName)}`);
         } finally {
-            client.close();
+            await client.close();
         }
     }, 90000);
 
@@ -70,7 +70,7 @@ describe('Integration: Provider RPC list & failover', () => {
             expect(idx).toBeGreaterThan(0);
             console.log('✅ ProviderManager failover index selection passed');
         } finally {
-            client.close();
+            await client.close();
         }
     }, 90000);
 });

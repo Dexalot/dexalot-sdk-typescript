@@ -1,4 +1,5 @@
 import { BaseClient } from '../../src/core/base';
+import { createConfig } from '../../src/core/config';
 import axios from 'axios';
 import { ethers, JsonRpcProvider, Contract, Signer, Provider } from 'ethers';
 import { ENV, CHAIN_ID, ENDPOINTS } from '../../src/constants';
@@ -75,7 +76,7 @@ describe('BaseClient', () => {
             client = new BaseClient();
         });
 
-        it('should fetch environments, tokens, and deployments on initialize', async () => {
+        it('should fetch environments, tokens, and deployments on initializeClient', async () => {
             // Setup spies
             const spyEnv = jest.spyOn(client, '_fetchEnvironments').mockResolvedValue();
             const spyTok = jest.spyOn(client, '_fetchTokens').mockResolvedValue();
@@ -83,7 +84,7 @@ describe('BaseClient', () => {
             const spyRfq = jest.spyOn(client as any, '_fetchRfqPairs').mockResolvedValue();
             const spyClob = jest.spyOn(client as any, '_fetchClobPairs').mockResolvedValue();
 
-            await client.initialize();
+            await client.initializeClient();
 
             expect(spyEnv).toHaveBeenCalled();
             expect(spyTok).toHaveBeenCalled();
@@ -98,13 +99,17 @@ describe('BaseClient', () => {
             
             jest.spyOn(client, '_fetchEnvironments').mockRejectedValue(new Error('Init Error'));
             
-            const result = await client.initialize();
+            const result = await client.initializeClient();
             
             expect(result.success).toBe(false);
             expect(result.error).toContain('Init Error');
             
             // Restore console.error
             consoleErrorSpy.mockRestore();
+        });
+
+        it('connect should resolve immediately', async () => {
+            await expect(client.connect()).resolves.toBeUndefined();
         });
     });
 
@@ -305,8 +310,7 @@ describe('BaseClient', () => {
              await client._fetchDeployments();
 
              expect(client.deployments['TradePairs'][ENV.FUJI_MULTI_SUBNET].address).toBe('0xTradePairs');
-             expect(Contract).toHaveBeenCalled(); 
-             // Ideally we check if it was called with specific args, but for now just verification of execution flow
+             expect(Contract).toHaveBeenCalled();
         });
     });
 
@@ -486,12 +490,64 @@ describe('BaseClient', () => {
              expect(token.chain_id).toBe(43114);
         });
 
-        it('getMainnets should return formatted mainnets', () => {
-             client.chainConfig = {
-                 'Avalanche': { chain_id: 43114 } as any
-             };
-             const mainnets = client.getMainnets();
-             expect(mainnets[43114]).toBe('Avalanche');
+        it('getChains should map chain_id to network from getEnvironments', async () => {
+            jest.spyOn(client, 'getEnvironments').mockResolvedValue(
+                Result.ok([
+                    { chainId: 43114, network: 'Avalanche' },
+                    { chainId: 1, network: 'Ethereum' },
+                ])
+            );
+            const res = await client.getChains();
+            expect(res.success).toBe(true);
+            expect(res.data![43114]).toBe('Avalanche');
+            expect(res.data![1]).toBe('Ethereum');
+        });
+
+        it('getChains should fail when getEnvironments fails', async () => {
+            jest.spyOn(client, 'getEnvironments').mockResolvedValue(Result.fail('boom'));
+            const res = await client.getChains();
+            expect(res.success).toBe(false);
+            expect(res.error).toContain('Failed to fetch environments');
+        });
+
+        describe('_apiCall retryOnExceptions', () => {
+            class CustomRetryError extends Error {}
+
+            it('retries when configured exception type is thrown', async () => {
+                const cfg = createConfig({
+                    parentEnv: 'fuji-multi',
+                    retryEnabled: true,
+                    retryMaxAttempts: 3,
+                    retryInitialDelay: 0,
+                    retryMaxDelay: 0,
+                    retryExponentialBase: 2,
+                    retryOnExceptions: [CustomRetryError],
+                });
+                const c = new BaseClient(cfg);
+                mockedAxios.request
+                    .mockRejectedValueOnce(new CustomRetryError('once'))
+                    .mockResolvedValueOnce({ data: { recovered: true } });
+
+                const data = await c._apiCall<{ recovered: boolean }>('get', 'https://api.test/x');
+                expect(data).toEqual({ recovered: true });
+                expect(mockedAxios.request).toHaveBeenCalledTimes(2);
+            });
+
+            it('does not retry custom errors without retryOnExceptions', async () => {
+                class CustomErr extends Error {}
+                const cfg = createConfig({
+                    parentEnv: 'fuji-multi',
+                    retryEnabled: true,
+                    retryMaxAttempts: 3,
+                    retryInitialDelay: 0,
+                    retryMaxDelay: 0,
+                });
+                const c = new BaseClient(cfg);
+                mockedAxios.request.mockRejectedValue(new CustomErr('nope'));
+
+                await expect(c._apiCall('get', 'https://api.test/y')).rejects.toThrow('nope');
+                expect(mockedAxios.request).toHaveBeenCalledTimes(1);
+            });
         });
 
         it('getDeployment should return internal deployments', async () => {
@@ -747,7 +803,7 @@ describe('BaseClient', () => {
         });
     });
 
-    describe('portfolioMainAvaxContract getter (legacy)', () => {
+    describe('portfolioMainAvaxContract getter', () => {
         it('should return Fuji contract if available', () => {
             client = new BaseClient();
             const mockContract = { address: '0xFuji' } as unknown as Contract;
@@ -858,7 +914,7 @@ describe('BaseClient', () => {
         });
     });
 
-    describe('updateSigner', () => {
+    describe('setSigner', () => {
         beforeEach(() => {
             (axios.create as jest.Mock).mockReturnValue(mockedAxios);
             client = new BaseClient();
@@ -868,7 +924,7 @@ describe('BaseClient', () => {
             const mockProvider = {} as Provider;
             const newSigner = { provider: mockProvider } as unknown as Signer;
             
-            await client.updateSigner(newSigner);
+            await client.setSigner(newSigner);
             
             expect(client.signer).toBe(newSigner);
             expect(client.provider).toBe(mockProvider);
@@ -881,7 +937,7 @@ describe('BaseClient', () => {
                 'subnet': { address: '0xTP', abi: [] }
             };
             
-            await client.updateSigner(newSigner);
+            await client.setSigner(newSigner);
             
             expect(Contract).toHaveBeenCalledWith('0xTP', [], newSigner);
         });
@@ -890,7 +946,7 @@ describe('BaseClient', () => {
             const newSigner = {} as Signer;
             client.deployments['PortfolioSub'] = { address: '0xPSub', abi: [] };
             
-            await client.updateSigner(newSigner);
+            await client.setSigner(newSigner);
             
             expect(Contract).toHaveBeenCalledWith('0xPSub', [], newSigner);
         });
@@ -902,7 +958,7 @@ describe('BaseClient', () => {
                 'Avalanche': { address: '0xPMain2', abi: [] }
             };
             
-            await client.updateSigner(newSigner);
+            await client.setSigner(newSigner);
             
             expect(Contract).toHaveBeenCalledWith('0xPMain1', [], newSigner);
             expect(Contract).toHaveBeenCalledWith('0xPMain2', [], newSigner);
@@ -914,12 +970,12 @@ describe('BaseClient', () => {
                 'Fuji': { address: '0xRFQ1', abi: [] }
             };
             
-            await client.updateSigner(newSigner);
+            await client.setSigner(newSigner);
             
             expect(Contract).toHaveBeenCalledWith('0xRFQ1', [], newSigner);
         });
 
-        it('should return fail Result on updateSigner error', async () => {
+        it('should return fail Result on setSigner error', async () => {
              // To trigger error, we can make 'Contract' constructor throw.
              // But Contract is a mock. We need to control it.
              (Contract as unknown as jest.Mock).mockImplementationOnce(() => {
@@ -933,7 +989,7 @@ describe('BaseClient', () => {
                  'subnet': { address: '0xTP', abi: [] }
              };
              
-             const result = await client.updateSigner(newSigner);
+             const result = await client.setSigner(newSigner);
              expect(result.success).toBe(false);
              expect(result.error).toContain('Signer Update Fail');
         });
@@ -997,14 +1053,14 @@ describe('BaseClient', () => {
     });
 
     describe('close', () => {
-        it('should clean up resources', () => {
+        it('should clean up resources', async () => {
             client = new BaseClient();
             // Mock internal objects
             client._apiRateLimiter = { reset: jest.fn() } as any;
             client._rpcRateLimiter = { reset: jest.fn() } as any;
             client._nonceManager = { clearAll: jest.fn() } as any;
 
-            client.close();
+            await client.close();
 
             expect(client._apiRateLimiter?.reset).toHaveBeenCalled();
             expect(client._rpcRateLimiter?.reset).toHaveBeenCalled();
@@ -1512,7 +1568,6 @@ describe('BaseClient', () => {
             // Should catch error and log warning
             await (client as any)._fetchRfqPairs();
             
-            // Restore original implementation
             Object.entries = originalEntries;
         });
 

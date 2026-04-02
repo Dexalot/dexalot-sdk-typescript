@@ -10,6 +10,34 @@ export class SwapClient extends CLOBClient {
 
         public rfqPairs: Record<number, any> = {};
 
+        /** Resolve a chain name or id string to a numeric chain ID for RFQ routing. */
+        protected _resolveChainIdResult(chainIdentifier: number | string): Result<number> {
+            if (chainIdentifier === null || chainIdentifier === undefined) {
+                return Result.fail('Chain identifier is required.');
+            }
+            const resolved = this.resolveChainReference(chainIdentifier);
+            if (
+                resolved.success &&
+                resolved.data != null &&
+                resolved.data.chainId != null
+            ) {
+                return Result.ok(resolved.data.chainId);
+            }
+            const rawNum =
+                typeof chainIdentifier === 'number' && Number.isInteger(chainIdentifier)
+                    ? chainIdentifier
+                    : typeof chainIdentifier === 'string' && /^\d+$/.test(chainIdentifier.trim())
+                      ? Number(chainIdentifier.trim())
+                      : null;
+            if (rawNum !== null && rawNum > 0) {
+                return Result.ok(rawNum);
+            }
+            return Result.fail(
+                resolved.error ||
+                    `Could not resolve chain identifier '${chainIdentifier}' to a Chain ID.`
+            );
+        }
+
         /**
          * Transform API quote response to match standardized field names (camelCase).
          * Maps lowercase/snake_case API fields to camelCase SDK fields.
@@ -101,28 +129,40 @@ export class SwapClient extends CLOBClient {
         /**
          * Get available swap pairs for a specific chain.
          * Cached for 15 minutes (semi-static data).
+         * @param chainIdentifier Numeric chain ID or chain display name.
          */
-        public async getSwapPairs(chainId: number): Promise<Result<any>> {
+        public async getSwapPairs(chainIdentifier: number | string): Promise<Result<any>> {
+            const chainResult = validateChainIdentifier(chainIdentifier, 'chainIdentifier');
+            if (!chainResult.success) {
+                return Result.fail(chainResult.error!);
+            }
+
+            const resolved = this._resolveChainIdResult(chainIdentifier);
+            if (!resolved.success || resolved.data == null) {
+                return Result.fail(
+                    resolved.error ||
+                        `Could not resolve chain identifier '${chainIdentifier}' to a Chain ID.`
+                );
+            }
+            const chainId = resolved.data;
+
             const cachedFn = withInstanceCache(
                 this,
                 this._semiStaticCache,
                 'getSwapPairs',
-                async (chainId: number): Promise<Result<any>> => {
-                    const chainResult = validateChainIdentifier(chainId, 'chainId');
-                    if (!chainResult.success) {
-                        return Result.fail(chainResult.error!);
-                    }
-
+                async (cid: number): Promise<Result<any>> => {
                     try {
-                        if (!this.rfqPairs[chainId]) {
-                            const data = await this._apiCall<any>('get', ENDPOINTS.RFQ_PAIRS, { 
-                                params: { chainid: chainId } 
+                        if (!this.rfqPairs[cid]) {
+                            const data = await this._apiCall<any>('get', ENDPOINTS.RFQ_PAIRS, {
+                                params: { chainid: cid },
                             });
-                            this.rfqPairs[chainId] = data;
+                            this.rfqPairs[cid] = data;
                         }
-                        return Result.ok(this.rfqPairs[chainId]);
+                        return Result.ok(this.rfqPairs[cid]);
                     } catch (e) {
-                        return Result.fail(this._sanitizeError(e, `fetching RFQ pairs for chain ${chainId}`));
+                        return Result.fail(
+                            this._sanitizeError(e, `fetching RFQ pairs for chain ${cid}`)
+                        );
                     }
                 }
             );
@@ -227,7 +267,7 @@ export class SwapClient extends CLOBClient {
         public async executeRFQSwap(
             quote: any,
             waitForReceipt: boolean = true
-        ): Promise<Result<{ tx_hash: string; operation: string }>> {
+        ): Promise<Result<{ txHash: string; operation: string }>> {
             if (!this.signer) {
                 return Result.fail('Signer required');
             }
@@ -287,10 +327,10 @@ export class SwapClient extends CLOBClient {
                         if (!receipt || receipt.status !== 1) {
                             return Result.fail("Transaction reverted");
                         }
-                        return Result.ok({ tx_hash: receipt.hash, operation: 'execute_rfq_swap' });
+                        return Result.ok({ txHash: receipt.hash, operation: 'execute_rfq_swap' });
                     }
 
-                    return Result.ok({ tx_hash: tx.hash, operation: 'execute_rfq_swap' });
+                    return Result.ok({ txHash: tx.hash, operation: 'execute_rfq_swap' });
                 });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'executing swap'));

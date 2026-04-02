@@ -16,16 +16,36 @@ export interface RetryOptions {
     retryOnStatus?: number[];
     /** Whether to retry on network errors (default: true) */
     retryOnNetworkError?: boolean;
+    /**
+     * Exception constructors that trigger a retry even when HTTP status / network
+     * heuristics do not match.
+     */
+    retryOnExceptions?: Array<new (...args: unknown[]) => unknown>;
 }
 
-const DEFAULT_RETRY_OPTIONS: Required<RetryOptions> = {
+const DEFAULT_RETRY_OPTIONS: Required<Omit<RetryOptions, 'retryOnExceptions'>> & {
+    retryOnExceptions: Array<new (...args: unknown[]) => unknown>;
+} = {
     maxAttempts: 3,
     initialDelay: 1000,
     maxDelay: 10000,
     exponentialBase: 2.0,
     retryOnStatus: [429, 500, 502, 503, 504],
     retryOnNetworkError: true,
+    retryOnExceptions: [],
 };
+
+function matchesRetryException(
+    error: unknown,
+    ctors: Array<new (...args: unknown[]) => unknown>
+): boolean {
+    for (const C of ctors) {
+        if (error instanceof C) {
+            return true;
+        }
+    }
+    return false;
+}
 
 /**
  * Check if an error is a retryable HTTP error.
@@ -109,7 +129,11 @@ export function asyncRetry<T extends (...args: any[]) => Promise<any>>(
     fn: T,
     options: RetryOptions = {}
 ): T {
-    const opts = { ...DEFAULT_RETRY_OPTIONS, ...options };
+    const opts = {
+        ...DEFAULT_RETRY_OPTIONS,
+        ...options,
+        retryOnExceptions: options.retryOnExceptions ?? DEFAULT_RETRY_OPTIONS.retryOnExceptions,
+    };
 
     const wrapped = async (...args: Parameters<T>): Promise<ReturnType<T>> => {
         let lastError: unknown;
@@ -121,9 +145,11 @@ export function asyncRetry<T extends (...args: any[]) => Promise<any>>(
                 lastError = error;
 
                 // Check if we should retry
+                const exceptionMatch = matchesRetryException(error, opts.retryOnExceptions);
                 const shouldRetry =
                     attempt < opts.maxAttempts &&
-                    (isRetryableHttpError(error, opts.retryOnStatus) ||
+                    (exceptionMatch ||
+                        isRetryableHttpError(error, opts.retryOnStatus) ||
                         (opts.retryOnNetworkError && isNetworkError(error)));
 
                 if (!shouldRetry) {

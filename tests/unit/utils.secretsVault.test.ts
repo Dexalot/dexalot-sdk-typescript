@@ -158,14 +158,14 @@ describe('secretsVault', () => {
     });
 
     describe('Fernet error paths', () => {
-        it('should fail when encrypting with invalid key length (line 43)', () => {
+        it('should fail when encrypting with invalid key length', () => {
             const shortKey = Buffer.from('tooshort').toString('base64url');
             const result = secretsVaultSet(vaultPath, 'BAD_KEY', 'value', shortKey);
             expect(result.success).toBe(false);
             expect(result.error).toContain('secretsVaultSet failed');
         });
 
-        it('should fail when decrypting with invalid key length (line 67)', () => {
+        it('should fail when decrypting with invalid key length', () => {
             const freshVault = path.join(tmpDir, 'bad_key_decrypt.db');
             const goodKey = generateSecretsVaultKey();
             secretsVaultSet(freshVault, 'KEY', 'value', goodKey);
@@ -176,7 +176,7 @@ describe('secretsVault', () => {
             expect(result.error).toContain('decryption failed');
         });
 
-        it('should fail when Fernet token is too short (line 73)', () => {
+        it('should fail when Fernet token is too short', () => {
             // Create a vault with a manually corrupted (truncated) token
             const freshVault = path.join(tmpDir, 'short_token.db');
             const encKey = generateSecretsVaultKey();
@@ -196,7 +196,7 @@ describe('secretsVault', () => {
             expect(result.error).toContain('decryption failed');
         });
 
-        it('should fail when Fernet version byte is wrong (line 78)', () => {
+        it('should fail when Fernet version byte is wrong', () => {
             const freshVault = path.join(tmpDir, 'bad_version.db');
             const encKey = generateSecretsVaultKey();
 
@@ -216,7 +216,7 @@ describe('secretsVault', () => {
             expect(result.error).toContain('decryption failed');
         });
 
-        it('should fail when HMAC verification fails (line 86)', () => {
+        it('should fail when HMAC verification fails', () => {
             const freshVault = path.join(tmpDir, 'bad_hmac.db');
             const encKey = generateSecretsVaultKey();
 
@@ -253,12 +253,69 @@ describe('secretsVault', () => {
         });
     });
 
-    describe('tilde path expansion (line 102)', () => {
+    describe('tilde path expansion', () => {
+        it('should expand bare tilde path to home directory string', () => {
+            const fakeHome = path.join(tmpDir, 'bare-tilde-home');
+            fs.mkdirSync(fakeHome, { recursive: true });
+            const oldHome = process.env.HOME;
+            process.env.HOME = fakeHome;
+            const encKey = generateSecretsVaultKey();
+            try {
+                const r = secretsVaultSet('~', 'BARE', 'v', encKey);
+                expect(r.success).toBe(false);
+                expect(r.error).toBeDefined();
+            } finally {
+                if (oldHome === undefined) delete process.env.HOME;
+                else process.env.HOME = oldHome;
+            }
+        });
+
+        it('should expand tilde using USERPROFILE when platform is win32', () => {
+            const fakeHome = path.join(tmpDir, 'fake-win-home');
+            fs.mkdirSync(fakeHome, { recursive: true });
+            const oldPlatform = process.platform;
+            const oldUserProfile = process.env.USERPROFILE;
+            const oldHome = process.env.HOME;
+            Object.defineProperty(process, 'platform', { value: 'win32' });
+            process.env.USERPROFILE = fakeHome;
+            delete process.env.HOME;
+
+            const suffix = Date.now();
+            const tildeVault = path.join('~', `.dexalot-win-${suffix}`, 'vault.db');
+            const encKey = generateSecretsVaultKey();
+
+            try {
+                const result = secretsVaultSet(tildeVault, 'WIN', 'value', encKey);
+                expect(result.success).toBe(true);
+            } finally {
+                Object.defineProperty(process, 'platform', { value: oldPlatform });
+                if (oldUserProfile === undefined) {
+                    delete process.env.USERPROFILE;
+                } else {
+                    process.env.USERPROFILE = oldUserProfile;
+                }
+                if (oldHome === undefined) {
+                    delete process.env.HOME;
+                } else {
+                    process.env.HOME = oldHome;
+                }
+                const expandedDir = path.join(fakeHome, `.dexalot-win-${suffix}`);
+                if (fs.existsSync(expandedDir)) {
+                    fs.rmSync(expandedDir, { recursive: true, force: true });
+                }
+            }
+        });
+
         it('should expand tilde in vault path', () => {
             const fakeHome = path.join(tmpDir, 'fake-home');
             fs.mkdirSync(fakeHome, { recursive: true });
             const oldHome = process.env.HOME;
-            process.env.HOME = fakeHome;
+            const oldUserProfile = process.env.USERPROFILE;
+            if (process.platform === 'win32') {
+                process.env.USERPROFILE = fakeHome;
+            } else {
+                process.env.HOME = fakeHome;
+            }
             const suffix = Date.now();
             const tildeVault = path.join('~', `.dexalot-test-${suffix}`, 'vault.db');
             const encKey = generateSecretsVaultKey();
@@ -271,7 +328,13 @@ describe('secretsVault', () => {
                 expect(getResult.success).toBe(true);
                 expect(getResult.data).toBe('value');
             } finally {
-                if (oldHome === undefined) {
+                if (process.platform === 'win32') {
+                    if (oldUserProfile === undefined) {
+                        delete process.env.USERPROFILE;
+                    } else {
+                        process.env.USERPROFILE = oldUserProfile;
+                    }
+                } else if (oldHome === undefined) {
                     delete process.env.HOME;
                 } else {
                     process.env.HOME = oldHome;
@@ -284,7 +347,7 @@ describe('secretsVault', () => {
         });
     });
 
-    describe('secretsVaultGet non-Fernet error path (line 187)', () => {
+    describe('secretsVaultGet non-Fernet error path', () => {
         it('should return generic error for non-Fernet database errors', () => {
             // Use a directory as the "database file" to cause a sqlite error
             const dirAsDb = path.join(tmpDir, 'dir_as_db');
@@ -297,7 +360,7 @@ describe('secretsVault', () => {
         });
     });
 
-    describe('secretsVaultList error path (line 205)', () => {
+    describe('secretsVaultList error path', () => {
         it('should return error when database cannot be opened', () => {
             // Use a directory as the "database file" to cause a sqlite error
             const dirAsDb = path.join(tmpDir, 'dir_as_db_list');
@@ -309,7 +372,7 @@ describe('secretsVault', () => {
         });
     });
 
-    describe('secretsVaultRemove error path (line 228)', () => {
+    describe('secretsVaultRemove error path', () => {
         it('should return error when database cannot be opened', () => {
             // Use a directory as the "database file" to cause a sqlite error
             const dirAsDb = path.join(tmpDir, 'dir_as_db_remove');
@@ -320,4 +383,5 @@ describe('secretsVault', () => {
             expect(result.error).toContain('secretsVaultRemove failed');
         });
     });
+
 });

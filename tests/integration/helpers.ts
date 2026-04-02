@@ -30,7 +30,7 @@ export async function getTestClient(): Promise<DexalotClient> {
 
     const signer = new Wallet(privateKey);
     _client = new DexalotClient(signer);
-    await _client.initialize();
+    await _client.initializeClient();
 
     console.log(`Integration test client initialized: ${signer.address}`);
     return _client;
@@ -57,7 +57,7 @@ export async function createFreshTestClient(overrides?: Partial<DexalotConfig>):
         ...base,
         privateKey,
     });
-    await client.initialize();
+    await client.initializeClient();
     console.log(`Fresh integration client initialized: ${(await client.signer!.getAddress())}`);
     return client;
 }

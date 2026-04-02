@@ -1,6 +1,5 @@
 /**
- * Token bucket rate limiter for async operations.
- * Matches Python SDK's AsyncRateLimiter implementation.
+ * Token-bucket style async rate limiter (serializes calls per instance).
  */
 export class AsyncRateLimiter {
     private readonly minInterval: number;
