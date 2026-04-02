@@ -255,20 +255,31 @@ describe('secretsVault', () => {
 
     describe('tilde path expansion (line 102)', () => {
         it('should expand tilde in vault path', () => {
-            const tildeVault = path.join('~', '.dexalot-test-' + Date.now(), 'vault.db');
+            const fakeHome = path.join(tmpDir, 'fake-home');
+            fs.mkdirSync(fakeHome, { recursive: true });
+            const oldHome = process.env.HOME;
+            process.env.HOME = fakeHome;
+            const suffix = Date.now();
+            const tildeVault = path.join('~', `.dexalot-test-${suffix}`, 'vault.db');
             const encKey = generateSecretsVaultKey();
 
-            const result = secretsVaultSet(tildeVault, 'TILDE', 'value', encKey);
-            expect(result.success).toBe(true);
+            try {
+                const result = secretsVaultSet(tildeVault, 'TILDE', 'value', encKey);
+                expect(result.success).toBe(true);
 
-            const getResult = secretsVaultGet(tildeVault, 'TILDE', encKey);
-            expect(getResult.success).toBe(true);
-            expect(getResult.data).toBe('value');
-
-            // Cleanup
-            const expandedDir = path.join(os.homedir(), '.dexalot-test-' + tildeVault.split('.dexalot-test-')[1].split('/')[0]);
-            if (fs.existsSync(expandedDir)) {
-                fs.rmSync(expandedDir, { recursive: true, force: true });
+                const getResult = secretsVaultGet(tildeVault, 'TILDE', encKey);
+                expect(getResult.success).toBe(true);
+                expect(getResult.data).toBe('value');
+            } finally {
+                if (oldHome === undefined) {
+                    delete process.env.HOME;
+                } else {
+                    process.env.HOME = oldHome;
+                }
+                const expandedDir = path.join(fakeHome, `.dexalot-test-${suffix}`);
+                if (fs.existsSync(expandedDir)) {
+                    fs.rmSync(expandedDir, { recursive: true, force: true });
+                }
             }
         });
     });

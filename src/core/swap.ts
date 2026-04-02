@@ -224,7 +224,10 @@ export class SwapClient extends CLOBClient {
         /**
          * Execute an RFQ swap using a firm quote.
          */
-        public async executeRFQSwap(quote: any, waitForReceipt: boolean = true): Promise<Result<string>> {
+        public async executeRFQSwap(
+            quote: any,
+            waitForReceipt: boolean = true
+        ): Promise<Result<{ tx_hash: string; operation: string }>> {
             if (!this.signer) {
                 return Result.fail('Signer required');
             }
@@ -251,10 +254,12 @@ export class SwapClient extends CLOBClient {
                 return Result.fail(`Unknown chain ID: ${chainId}`);
             }
 
-            const contract = this.mainnetRfqContracts[chainName];
-            if (!contract) {
-                const availableChains = Object.keys(this.mainnetRfqContracts).join(', ');
-                return Result.fail(`RFQ contract not found for '${chainName}'. Available: ${availableChains || 'none'}`);
+            const rfqDep = this._mainnetRfqDeployment(chainName);
+            if (!rfqDep) {
+                const available = Object.keys(this.deployments['MainnetRFQ'] || {}).join(', ');
+                return Result.fail(
+                    `RFQ contract not found for '${chainName}'. Available: ${available || 'none'}`
+                );
             }
 
             try {
@@ -269,17 +274,24 @@ export class SwapClient extends CLOBClient {
                     orderData.takerAmount
                 ];
 
-                const tx = await contract.simpleSwap(orderTuple, sig);
-                
-                if (waitForReceipt) {
-                    const receipt = await tx.wait();
-                    if (!receipt || receipt.status !== 1) {
-                        return Result.fail("Transaction reverted");
+                return await this.withRpcFailover(chainName, async (provider) => {
+                    const contract = this._contractForSigner(
+                        provider,
+                        rfqDep.address,
+                        rfqDep.abi
+                    );
+                    const tx = await contract.simpleSwap(orderTuple, sig);
+                    
+                    if (waitForReceipt) {
+                        const receipt = await tx.wait();
+                        if (!receipt || receipt.status !== 1) {
+                            return Result.fail("Transaction reverted");
+                        }
+                        return Result.ok({ tx_hash: receipt.hash, operation: 'execute_rfq_swap' });
                     }
-                    return Result.ok(`Swap transaction confirmed: ${receipt.hash}`);
-                }
-                
-                return Result.ok(`Swap transaction sent: ${tx.hash}`);
+
+                    return Result.ok({ tx_hash: tx.hash, operation: 'execute_rfq_swap' });
+                });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'executing swap'));
             }

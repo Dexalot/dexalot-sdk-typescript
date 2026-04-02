@@ -2,6 +2,7 @@
  * Integration Test Helpers for Dexalot Core
  */
 import { DexalotClient } from '../../src/core/client';
+import { createConfig, type DexalotConfig } from '../../src/core/config';
 import { Wallet } from 'ethers';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -33,6 +34,32 @@ export async function getTestClient(): Promise<DexalotClient> {
 
     console.log(`Integration test client initialized: ${signer.address}`);
     return _client;
+}
+
+/**
+ * Create a new DexalotClient (not the shared singleton) with optional config overrides.
+ * Use for tests that need a different config (e.g. WebSocket enabled) without affecting other suites.
+ */
+export async function createFreshTestClient(overrides?: Partial<DexalotConfig>): Promise<DexalotClient> {
+    process.env.PARENTENV = 'fuji-multi';
+
+    const privateKey = process.env.PRIVATE_KEY;
+    if (!privateKey) {
+        throw new Error('PRIVATE_KEY environment variable is required for integration tests');
+    }
+
+    const base = createConfig({
+        parentEnv: 'fuji-multi',
+        ...overrides,
+    });
+
+    const client = new DexalotClient({
+        ...base,
+        privateKey,
+    });
+    await client.initialize();
+    console.log(`Fresh integration client initialized: ${(await client.signer!.getAddress())}`);
+    return client;
 }
 
 /**

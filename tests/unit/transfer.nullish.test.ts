@@ -21,7 +21,10 @@ describe('TransferClient - Nullish Coalescing Coverage', () => {
         
         mockSigner = {
             getAddress: jest.fn().mockResolvedValue(mockAddress),
-            provider: { getBalance: jest.fn().mockResolvedValue(1000n) }
+            provider: { getBalance: jest.fn().mockResolvedValue(1000n) },
+            connect: jest.fn().mockImplementation(function (this: any) {
+                return this;
+            })
         };
 
         mockContract = {
@@ -46,6 +49,8 @@ describe('TransferClient - Nullish Coalescing Coverage', () => {
         client = new TestClient(mockSigner);
         client.portfolioSubContractView = mockContract;
         client.portfolioSubContract = mockContract;
+        client.deployments['PortfolioSub'] = { address: '0xPortfolioSub', abi: [] };
+        client.subnetProvider = {} as any;
         client.subnetChainId = 12345;
         client.chainId = 43114;
         client.env = ENV.PROD_MULTI_AVAX;

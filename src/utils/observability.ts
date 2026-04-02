@@ -189,12 +189,12 @@ export async function trackOperation<T>(
     context?: Record<string, any>
 ): Promise<T> {
     const startTime = Date.now();
-    logger.info(`${operation} started`, context);
+    logger.debug(`${operation} started`, context);
 
     try {
         const result = await fn();
         const duration = Date.now() - startTime;
-        logger.info(`${operation} completed`, { ...context, durationMs: duration });
+        logger.debug(`${operation} completed`, { ...context, durationMs: duration });
         return result;
     } catch (error) {
         const duration = Date.now() - startTime;
@@ -236,12 +236,12 @@ export function trackMethod(component: string) {
             const operation = propertyKey;
             const startTime = Date.now();
             
-            logger.info(`${operation} started`);
+            logger.debug(`${operation} started`);
 
             try {
                 const result = await originalMethod.apply(this, args);
                 const duration = Date.now() - startTime;
-                logger.info(`${operation} completed`, { durationMs: duration });
+                logger.debug(`${operation} completed`, { durationMs: duration });
                 return result;
             } catch (error) {
                 const duration = Date.now() - startTime;

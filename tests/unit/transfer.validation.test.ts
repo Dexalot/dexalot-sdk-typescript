@@ -23,7 +23,10 @@ describe('TransferClient - Additional Coverage', () => {
         // Setup Signer
         mockSigner = {
             getAddress: jest.fn().mockResolvedValue(mockAddress),
-            provider: { getBalance: jest.fn().mockResolvedValue(1000n) }
+            provider: { getBalance: jest.fn().mockResolvedValue(1000n) },
+            connect: jest.fn().mockImplementation(function (this: any) {
+                return this;
+            })
         };
 
         // Setup Contract Mock
@@ -59,6 +62,8 @@ describe('TransferClient - Additional Coverage', () => {
         client.portfolioSubContractView = mockContract;
         client.portfolioMainContracts = { 'Avalanche': mockContract };
         client.portfolioSubContract = mockContract;
+        client.deployments['PortfolioSub'] = { address: '0xPortfolioSub', abi: [] };
+        client.subnetProvider = {} as any;
         client.subnetChainId = 12345;
         client.chainId = 43114;
         client.env = ENV.PROD_MULTI_AVAX;

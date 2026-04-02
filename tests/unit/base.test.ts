@@ -52,7 +52,10 @@ describe('BaseClient', () => {
                 privateKey: '0x1234567890123456789012345678901234567890123456789012345678901234'
             } as any;
             client = new BaseClient(config);
-            expect(client.config).toBe(config);
+            expect(client.config).toMatchObject({
+                parentEnv: 'fuji-multi',
+                apiBaseUrl: 'https://test.api.com',
+            });
             expect(client.signer).toBeDefined();
             expect(client.signer).toBeInstanceOf(ethers.Wallet);
         });

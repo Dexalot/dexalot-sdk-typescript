@@ -28,7 +28,10 @@ describe('CLOBClient', () => {
 
         mockSigner = {
             getAddress: jest.fn().mockResolvedValue(mockAddress),
-            signMessage: jest.fn().mockResolvedValue('0xSignature')
+            signMessage: jest.fn().mockResolvedValue('0xSignature'),
+            connect: jest.fn().mockImplementation(function (this: any) {
+                return this;
+            })
         };
 
         mockAxios = {
@@ -68,7 +71,11 @@ describe('CLOBClient', () => {
             cancelAddList: jest.fn().mockResolvedValue({ 
                 hash: '0xCancelAddHash',
                 wait: jest.fn().mockResolvedValue({ status: 1 })
-            })
+            }),
+            cancelOrderByClientId: jest.fn().mockResolvedValue({
+                hash: '0xCancelByClientHash',
+                wait: jest.fn().mockResolvedValue({ status: 1, hash: '0xCancelByClientHash' }),
+            }),
         };
         // Gas estimates
         mockContract.addNewOrder.estimateGas = jest.fn().mockResolvedValue(100000n);
@@ -78,6 +85,7 @@ describe('CLOBClient', () => {
         mockContract.cancelReplaceOrder.estimateGas = jest.fn().mockResolvedValue(100000n);
         mockContract.cancelOrderListByClientIds.estimateGas = jest.fn().mockResolvedValue(100000n);
         mockContract.cancelAddList.estimateGas = jest.fn().mockResolvedValue(100000n);
+        mockContract.cancelOrderByClientId.estimateGas = jest.fn().mockResolvedValue(100000n);
 
         // Utils Mocks
         (Utils.toBytes32 as jest.Mock).mockImplementation(val => `0xBytes32_${val}`);
@@ -88,10 +96,12 @@ describe('CLOBClient', () => {
 
         client = new TestClient(mockSigner);
         (client as any).axios = mockAxios;
-        client.tradePairsContract = mockContract;
+        client.deployments['TradePairs'] = { subnet: { address: '0xTradePairs', abi: [] } };
+        client.subnetProvider = {} as any;
+        (Contract as jest.Mock).mockImplementation(() => mockContract);
         client.subnetEnv = ENV.PROD_MULTI_SUBNET;
-        // Setup config to disable retry for faster tests
-        (client as any).config = { retryEnabled: false }; 
+        // Disable retry for faster tests; keep full config for RPC failover helpers
+        client.config.retryEnabled = false;
         
         // Setup initial pairs for convenience (avoid getClobPairs call in every test)
         client.pairs = {
@@ -293,6 +303,23 @@ describe('CLOBClient', () => {
           });
     });
 
+    describe('cancelOrderByClientId', () => {
+        it('should cancel by client order id', async () => {
+            const result = await client.cancelOrderByClientId(VALID_CLIENT_ID);
+            expect(result.success).toBe(true);
+            expect(mockContract.cancelOrderByClientId).toHaveBeenCalledWith(
+                VALID_CLIENT_ID,
+                expect.any(Object)
+            );
+        });
+
+        it('should return error if signer missing', async () => {
+            client.signer = undefined as any;
+            const result = await client.cancelOrderByClientId(VALID_CLIENT_ID);
+            expect(result.success).toBe(false);
+        });
+    });
+
     describe('cancelAllOrders', () => {
          it('should fetch open orders and cancel list', async () => {
              // Mock getOpenOrders internally or via axios mock?
@@ -348,7 +375,7 @@ describe('CLOBClient', () => {
          });
 
           it('should return error if contract missing in cancelOrder', async () => {
-              client.tradePairsContract = null;
+              client.deployments['TradePairs'] = {};
               const result = await client.cancelOrder(VALID_ORDER_ID);
               expect(result.success).toBe(false);
               expect(result.error).toContain('TradePairs contract not initialized');
@@ -452,7 +479,7 @@ describe('CLOBClient', () => {
          });
 
          it('should return error if contract missing', async () => {
-             client.tradePairsContract = null;
+             client.deployments['TradePairs'] = {};
              const result = await client.getOrderBook('AVAX/USDC');
              expect(result.success).toBe(false);
              expect(result.error).toContain('Contract not init');
@@ -889,6 +916,18 @@ describe('CLOBClient', () => {
               client.signer = undefined as any;
               await expect(client._getAuthHeaders()).rejects.toThrow("No signer");
          });
+
+         it('should support timestamped auth headers', async () => {
+              client.config.timestampedAuth = true;
+              client._cachedSignature = null;
+              const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+              const headers = await client._getAuthHeaders();
+              expect(headers['x-timestamp']).toBe('1700000000000');
+              expect(mockSigner.signMessage).toHaveBeenCalledWith('dexalot1700000000000');
+              expect(headers['x-signature']).toContain('0xUserAddress:');
+              nowSpy.mockRestore();
+              client.config.timestampedAuth = false;
+         });
     });
 
     describe('addOrder Enums', () => {
@@ -906,7 +945,7 @@ describe('CLOBClient', () => {
          });
 
          it('should throw if contract missing in addOrder', async () => {
-             client.tradePairsContract = null;
+             client.deployments['TradePairs'] = {};
              const result = await client.addOrder({ pair: 'AVAX/USDC', side: 'BUY', amount: 10, price: 10 });
              expect(result.success).toBe(false);
              expect(result.error).toContain('TradePairs contract not initialized');

@@ -19,6 +19,10 @@ describe('BaseClient - Configuration Fallbacks', () => {
                 apiBaseUrl: undefined as any,
                 privateKey: '0x1234567890123456789012345678901234567890123456789012345678901234'
             };
+            (createConfig as jest.Mock).mockImplementation((partial?: Partial<DexalotConfig>) => ({
+                ...config,
+                ...partial,
+            }));
 
             const client = new BaseClient(config);
             expect(client.apiBaseUrl).toBe(API_URL.TESTNET);
@@ -31,6 +35,10 @@ describe('BaseClient - Configuration Fallbacks', () => {
                 apiBaseUrl: customUrl,
                 privateKey: '0x1234567890123456789012345678901234567890123456789012345678901234'
             };
+            (createConfig as jest.Mock).mockImplementation((partial?: Partial<DexalotConfig>) => ({
+                ...config,
+                ...partial,
+            }));
 
             const client = new BaseClient(config);
             expect(client.apiBaseUrl).toBe(customUrl);

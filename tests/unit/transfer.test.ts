@@ -28,7 +28,10 @@ describe('TransferClient', () => {
         // Setup Signer
         mockSigner = {
             getAddress: jest.fn().mockResolvedValue(mockAddress),
-            provider: { getBalance: jest.fn().mockResolvedValue(1000n) }
+            provider: { getBalance: jest.fn().mockResolvedValue(1000n) },
+            connect: jest.fn().mockImplementation(function (this: any) {
+                return this;
+            })
         };
 
         // Setup Contract Mock
@@ -95,6 +98,10 @@ describe('TransferClient', () => {
         client.portfolioSubContractView = mockContract; 
         client.portfolioMainContracts = { 'Avalanche': mockContract }; // Per-chain contracts
         client.portfolioSubContract = mockContract;
+        client.deployments['PortfolioSub'] = { address: '0xPortfolioSub', abi: [] };
+        client.deployments['PortfolioMain'] = { Avalanche: { address: '0xPortfolioMain', abi: [] } };
+        mockProvider = {};
+        client.subnetProvider = mockProvider as any;
         client.subnetChainId = 12345;
         client.chainId = 43114;
         client.env = ENV.PROD_MULTI_AVAX;
@@ -135,7 +142,7 @@ describe('TransferClient', () => {
         });
 
         it('should return error if Subnet View not initialized', async () => {
-             client.portfolioSubContractView = null;
+             delete (client.deployments as any)['PortfolioSub'];
              const result = await client.getPortfolioBalance('AVAX');
              expect(result.success).toBe(false);
              expect(result.error).toContain('Subnet View Contract not initialized');
@@ -145,7 +152,7 @@ describe('TransferClient', () => {
              client.signer = undefined as any;
              const result = await client.getPortfolioBalance('AVAX');
              expect(result.success).toBe(false);
-             expect(result.error).toContain('Signer');
+             expect(result.error).toContain('Address required');
         });
 
         it('should default to 18 decimals if token unknown', async () => {
@@ -164,6 +171,45 @@ describe('TransferClient', () => {
              const result = await client.getPortfolioBalance('AVAX');
              expect(result.success).toBe(false);
              expect(result.error).toBeDefined();
+        });
+    });
+
+    describe('getTokenDetails', () => {
+        it('returns token details from API', async () => {
+            const spy = jest.spyOn(client as any, '_apiCall').mockResolvedValue([
+                {
+                    symbol: 'AVAX',
+                    address: '0xabc',
+                    evmdecimals: 18,
+                    env: ENV.PROD_MULTI_AVAX,
+                    name: 'Avalanche',
+                    chainid: 43114,
+                },
+            ]);
+            const result = await client.getTokenDetails('AVAX');
+            expect(result.success).toBe(true);
+            expect(result.data).toMatchObject({
+                [ENV.PROD_MULTI_AVAX]: {
+                    symbol: 'AVAX',
+                    address: '0xabc',
+                    decimals: 18,
+                },
+            });
+            spy.mockRestore();
+        });
+
+        it('returns fail when token not in list', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValue([]);
+            const result = await client.getTokenDetails('MISSING');
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('not found');
+        });
+
+        it('propagates API failure', async () => {
+            jest.spyOn(client as any, '_apiCall').mockRejectedValue(new Error('network down'));
+            const result = await client.getTokenDetails('AVAX');
+            expect(result.success).toBe(false);
+            expect(result.error).toBeDefined();
         });
     });
 
@@ -191,7 +237,7 @@ describe('TransferClient', () => {
         });
 
         it('should return error if PortfolioMain contract missing for chain', async () => {
-             client.portfolioMainContracts = {};
+             client.deployments['PortfolioMain'] = {};
              const result = await client.deposit('AVAX', 10, 'Avalanche');
              expect(result.success).toBe(false);
              expect(result.error).toContain("PortfolioMain contract not found");
@@ -247,7 +293,7 @@ describe('TransferClient', () => {
         });
 
          it('should return error if PortfolioSub missing', async () => {
-             client.portfolioSubContract = null;
+             delete (client.deployments as any)['PortfolioSub'];
              const result = await client.withdraw('AVAX', 10, 'Destination');
              expect(result.success).toBe(false);
              expect(result.error).toContain('Portfolio Sub contract not available');
@@ -289,7 +335,7 @@ describe('TransferClient', () => {
         });
 
         it('should return error if init missing', async () => {
-             client.portfolioSubContract = null;
+             delete (client.deployments as any)['PortfolioSub'];
              const result = await client.transferPortfolio('AVAX', 10, validAddress);
              expect(result.success).toBe(false);
              expect(result.error).toContain('Signer/Contract not initialized');
@@ -334,7 +380,7 @@ describe('TransferClient', () => {
         });
 
         it('should return error if init missing', async () => {
-             client.portfolioSubContract = null;
+             delete (client.deployments as any)['PortfolioSub'];
              const addResult = await client.addGas(10);
              expect(addResult.success).toBe(false);
              expect(addResult.error).toContain('Signer/Contract not initialized');
@@ -396,7 +442,7 @@ describe('TransferClient', () => {
         });
 
         it('should return error if init missing', async () => {
-             client.portfolioSubContractView = null;
+             delete (client.deployments as any)['PortfolioSub'];
              const result = await client.getAllPortfolioBalances();
              expect(result.success).toBe(false);
              expect(result.error).toContain('Subnet View Contract not initialized');
@@ -405,7 +451,7 @@ describe('TransferClient', () => {
              client.signer = undefined as any;
              const result = await client.getAllPortfolioBalances();
              expect(result.success).toBe(false);
-             expect(result.error).toContain('Signer');
+             expect(result.error).toContain('Address required');
         });
 
         it('should handle getAllPortfolioBalances errors in catch block', async () => {
@@ -442,7 +488,7 @@ describe('TransferClient', () => {
             client.signer = undefined as any;
             const result = await client.getChainWalletBalance('Dexalot L1', 'ALOT');
             expect(result.success).toBe(false);
-            expect(result.error).toBe('Private key not configured.');
+            expect(result.error).toBe('Address required (pass as param or set signer)');
         });
 
         it('should return mainnet native token balance', async () => {
@@ -488,8 +534,8 @@ describe('TransferClient', () => {
             client.tokenData = {};
 
             const result = await client.getChainWalletBalance('Avalanche', 'UNKNOWN');
-            expect(result.success).toBe(true);
-            expect(result.data!.error).toContain('not found in token data');
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('not found in token data');
         });
 
         it('should return error for token not on chain', async () => {
@@ -500,8 +546,8 @@ describe('TransferClient', () => {
             };
 
             const result = await client.getChainWalletBalance('Avalanche', 'SPECIAL');
-            expect(result.success).toBe(true);
-            expect(result.data!.error).toContain('not available on chain');
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('not available on chain');
         });
 
         it('should return error for token with zero address', async () => {
@@ -512,12 +558,14 @@ describe('TransferClient', () => {
             };
 
             const result = await client.getChainWalletBalance('Avalanche', 'ZERO');
-            expect(result.success).toBe(true);
-            expect(result.data!.error).toContain('not available on chain');
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('not available on chain');
         });
 
         it('should handle ERC20 contract errors', async () => {
-            client.connectedChainProviders = { 'Avalanche': {} as any };
+            client.connectedChainProviders = {
+                Avalanche: { getBalance: jest.fn().mockResolvedValue(0n) } as any,
+            };
             client.chainConfig = { 'Avalanche': { chain_id: 43114, native_symbol: 'AVAX' } as any };
             client.tokenData = {
                 'ERR': { 'prod': { address: '0xERR', chainId: 43114, decimals: 18, env: 'prod' } as any }
@@ -527,8 +575,8 @@ describe('TransferClient', () => {
             }));
 
             const result = await client.getChainWalletBalance('Avalanche', 'ERR');
-            expect(result.success).toBe(true);
-            expect(result.data!.balance).toContain('Error');
+            expect(result.success).toBe(false);
+            expect(result.error).toBeDefined();
         });
 
         it('should fallback to env string matching for Fuji', async () => {
@@ -623,7 +671,7 @@ describe('TransferClient', () => {
             client.signer = undefined as any;
             const result = await client.getChainWalletBalances('Dexalot L1');
             expect(result.success).toBe(false);
-            expect(result.error).toBe('Private key not configured.');
+            expect(result.error).toBe('Address required (pass as param or set signer)');
         });
 
         it('should return mainnet chain balances', async () => {
@@ -705,7 +753,7 @@ describe('TransferClient', () => {
              client.signer = undefined as any;
              const result = await client.getAllChainWalletBalances();
              expect(result.success).toBe(false);
-             expect(result.error).toBe('Private key not configured.');
+             expect(result.error).toBe('Address required (pass as param or set signer)');
         });
 
          it('should handle provider errors gracefully', async () => {
@@ -773,6 +821,7 @@ describe('TransferClient', () => {
 
          it('should handle L1 provider error', async () => {
              const mockL1 = { getBalance: jest.fn().mockRejectedValue(new Error("L1 Fail")) };
+             client.subnetProvider = null as any;
              client.provider = mockL1 as any;
              (client.signer as any).provider = mockL1; // Ensure signer.provider matches
              
@@ -1042,6 +1091,11 @@ describe('TransferClient', () => {
                 'Ethereum': { chain_id: 1, env: ENV.PROD_MULTI_AVAX } as any // No native_symbol
             };
             client.portfolioMainContracts = { 'Ethereum': mockContract };
+            client.deployments['PortfolioMain'] = {
+                ...client.deployments['PortfolioMain'],
+                Ethereum: { address: '0xPortfolioMainEth', abi: [] },
+            };
+            client.connectedChainProviders['Ethereum'] = {} as any;
             client.tokenData = { 
                 'ETH': { [ENV.PROD_MULTI_AVAX]: { address: '0x0', decimals: 18, chainId: 1, env: ENV.PROD_MULTI_AVAX } as any }
             };
@@ -1058,6 +1112,11 @@ describe('TransferClient', () => {
                 'Ethereum': { chain_id: 1 } as any // No env property
             };
             client.portfolioMainContracts = { 'Ethereum': mockContract };
+            client.deployments['PortfolioMain'] = {
+                ...client.deployments['PortfolioMain'],
+                Ethereum: { address: '0xPortfolioMainEth', abi: [] },
+            };
+            client.connectedChainProviders['Ethereum'] = {} as any;
             client.tokenData = { 
                 'USDC': { 'some-other-env': { address: '0xUSDC', decimals: 6 } as any }
             };

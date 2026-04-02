@@ -1,7 +1,8 @@
-import { ethers, TransactionResponse, toBigInt } from 'ethers';
+import { Contract, ethers, TransactionResponse, toBigInt } from 'ethers';
 import { Utils } from '../utils/index.js';
 import { OrderRequest, Pair, OrderBook, Order } from '../types/index.js';
-import { ENDPOINTS, ENV, DEFAULTS } from '../constants.js';
+import { ENDPOINTS, ENV, DEFAULTS, wsApiUrlForRestBase } from '../constants.js';
+import { WebSocketManager } from '../utils/websocketManager.js';
 import { BaseClient } from './base.js';
 import { Result } from '../utils/result.js';
 import { withInstanceCache } from '../utils/cache.js';
@@ -111,6 +112,123 @@ export class CLOBClient extends BaseClient {
             return !!this.pairs[pair];
         }
 
+        /** Fetch CLOB pairs if needed, then verify pair exists (async parity with Python). */
+        public async _ensurePairExistsAsync(pair: string): Promise<boolean> {
+            if (this._ensurePairExists(pair)) return true;
+            const r = await this.getClobPairs();
+            return r.success && !!this.pairs[pair];
+        }
+
+        /** Run an op against TradePairs on subnet RPC with provider failover (Python `_get_w3_l1` / `_rpc_call`). */
+        private async _withL1TradePairsContract<T>(fn: (contract: Contract) => Promise<T>): Promise<T> {
+            const d = this._tradePairsDeployment();
+            if (!d) {
+                throw new Error('TradePairs contract not initialized.');
+            }
+            return this.withRpcFailover(this._dexalotL1DisplayName(), (p) =>
+                fn(this._contractForSigner(p, d.address, d.abi))
+            );
+        }
+
+        private _getOrCreateWsManager(): WebSocketManager | null {
+            if (!this.config.wsManagerEnabled) {
+                return null;
+            }
+            if (!this._wsManager) {
+                this._wsManager = new WebSocketManager(
+                    wsApiUrlForRestBase(this.apiBaseUrl),
+                    {
+                        pingInterval: this.config.wsPingInterval,
+                        pingTimeout: this.config.wsPingTimeout,
+                        reconnectInitialDelay: this.config.wsReconnectInitialDelay,
+                        reconnectMaxDelay: this.config.wsReconnectMaxDelay,
+                        reconnectExponentialBase: this.config.wsReconnectExponentialBase,
+                        reconnectMaxAttempts: this.config.wsReconnectMaxAttempts,
+                    },
+                    {
+                        wsTimeOffsetMs: this.config.wsTimeOffsetMs,
+                        auth: this.signer
+                            ? {
+                                  getAddress: () => this.signer!.getAddress(),
+                                  signMessage: (m: string) => this.signer!.signMessage(m),
+                              }
+                            : undefined,
+                    }
+                );
+            }
+            return this._wsManager;
+        }
+
+        /**
+         * Subscribe to WebSocket events. Requires wsManagerEnabled in config.
+         */
+        public async subscribeToEvents(
+            topic: string,
+            callback: (data: unknown) => void,
+            isPrivate: boolean = false
+        ): Promise<void> {
+            if (!this.config.wsManagerEnabled) {
+                throw new Error('WebSocket Manager is disabled. Set wsManagerEnabled=true in config.');
+            }
+            const manager = this._getOrCreateWsManager();
+            if (!manager) {
+                throw new Error('WebSocket manager unavailable.');
+            }
+
+            let orderbookPair: string | null = null;
+            if (!isPrivate) {
+                if (topic.startsWith('OrderBook/')) {
+                    orderbookPair = topic.slice('OrderBook/'.length);
+                } else if (topic.includes('/') && topic.split('/').length === 2) {
+                    orderbookPair = topic;
+                }
+            }
+
+            if (orderbookPair) {
+                const pr = validatePairFormat(orderbookPair, 'pair');
+                if (!pr.success) {
+                    throw new Error(pr.error || `Invalid trading pair in WebSocket topic: ${orderbookPair}`);
+                }
+                const normalized = this.normalizePair(orderbookPair);
+                if (!(await this._ensurePairExistsAsync(normalized))) {
+                    throw new Error(`Trading pair not found for WebSocket: ${normalized}`);
+                }
+                const pd = this.pairs[normalized] || ({} as Pair);
+                const orderbookDecimal = Number(
+                    pd.quote_display_decimals ?? pd.base_display_decimals ?? 8
+                );
+                manager.subscribe(
+                    topic,
+                    callback as (data: any) => void,
+                    isPrivate,
+                    { kind: 'orderbook', pair: normalized, decimal: orderbookDecimal }
+                );
+            } else {
+                manager.subscribe(topic, callback as (data: any) => void, isPrivate);
+            }
+
+            if (!manager.isConnected) {
+                manager.connect();
+            }
+        }
+
+        public unsubscribeFromEvents(topic: string): void {
+            if (this._wsManager) {
+                this._wsManager.unsubscribe(topic);
+            }
+        }
+
+        public async closeWebsocket(graceS: number = 3): Promise<void> {
+            if (!this._wsManager) return;
+            const mgr = this._wsManager;
+            this._wsManager = null;
+            mgr.disconnect();
+            const ms = Math.max(0, graceS) * 1000;
+            if (ms > 0) {
+                await new Promise<void>(resolve => setTimeout(resolve, Math.min(ms, 100)));
+            }
+        }
+
         /**
          * Place a new order.
          */
@@ -141,9 +259,7 @@ export class CLOBClient extends BaseClient {
             }
 
             const pairData = this.pairs[req.pair];
-            const contract = this.tradePairsContract;
-
-            if (!contract) {
+            if (!this._tradePairsDeployment()) {
                 return Result.fail('TradePairs contract not initialized.');
             }
 
@@ -179,24 +295,26 @@ export class CLOBClient extends BaseClient {
                     stp: 0
                 };
 
-                const gasEst = await contract.addNewOrder.estimateGas(orderStruct);
-                const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
-                const tx = await contract.addNewOrder(orderStruct, { gasLimit });
-                
-                if (waitForReceipt) {
-                    const receipt = await tx.wait();
-                    if (!receipt || receipt.status !== 1) {
-                        return Result.fail("Transaction reverted");
+                return await this._withL1TradePairsContract(async (contract) => {
+                    const gasEst = await contract.addNewOrder.estimateGas(orderStruct);
+                    const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
+                    const tx = await contract.addNewOrder(orderStruct, { gasLimit });
+                    
+                    if (waitForReceipt) {
+                        const receipt = await tx.wait();
+                        if (!receipt || receipt.status !== 1) {
+                            return Result.fail("Transaction reverted");
+                        }
+                        return Result.ok({
+                            txHash: receipt.hash,
+                            clientOrderId: clientOrderId
+                        });
                     }
+                    
                     return Result.ok({
-                        txHash: receipt.hash,
+                        txHash: tx.hash,
                         clientOrderId: clientOrderId
                     });
-                }
-                
-                return Result.ok({
-                    txHash: tx.hash,
-                    clientOrderId: clientOrderId
                 });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'placing order'));
@@ -216,27 +334,78 @@ export class CLOBClient extends BaseClient {
                 return Result.fail(validationResult.error!);
             }
 
-            const contract = this.tradePairsContract;
-            if (!contract) {
+            if (!this._tradePairsDeployment()) {
                 return Result.fail('TradePairs contract not initialized.');
             }
 
             try {
-                const gasEst = await contract.cancelOrder.estimateGas(orderId);
-                const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
-                const tx = await contract.cancelOrder(orderId, { gasLimit });
-                
-                if (waitForReceipt) {
-                    const receipt = await tx.wait();
-                    if (!receipt || receipt.status !== 1) {
-                        return Result.fail("Transaction reverted");
+                return await this._withL1TradePairsContract(async (contract) => {
+                    const gasEst = await contract.cancelOrder.estimateGas(orderId);
+                    const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
+                    const tx = await contract.cancelOrder(orderId, { gasLimit });
+                    
+                    if (waitForReceipt) {
+                        const receipt = await tx.wait();
+                        if (!receipt || receipt.status !== 1) {
+                            return Result.fail("Transaction reverted");
+                        }
+                        return Result.ok({ txHash: receipt.hash });
                     }
-                    return Result.ok({ txHash: receipt.hash });
-                }
-                
-                return Result.ok({ txHash: tx.hash });
+                    
+                    return Result.ok({ txHash: tx.hash });
+                });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'cancelling order'));
+            }
+        }
+
+        /**
+         * Cancel a single open order by client order ID (on-chain).
+         */
+        public async cancelOrderByClientId(
+            clientOrderId: string,
+            waitForReceipt: boolean = true
+        ): Promise<Result<{ txHash: string; cancelledClientOrderId: string }>> {
+            if (!this.signer) {
+                return Result.fail('Private key not configured.');
+            }
+
+            const validationResult = validateOrderIdFormat(clientOrderId, 'clientOrderId');
+            if (!validationResult.success) {
+                return Result.fail(validationResult.error!);
+            }
+
+            if (!this._tradePairsDeployment()) {
+                return Result.fail('TradePairs contract not initialized.');
+            }
+
+            try {
+                const clientOrderIdBytes = clientOrderId.startsWith('0x')
+                    ? clientOrderId
+                    : Utils.toBytes32(clientOrderId);
+                return await this._withL1TradePairsContract(async (contract) => {
+                    const gasEst = await contract.cancelOrderByClientId.estimateGas(clientOrderIdBytes);
+                    const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
+                    const tx = await contract.cancelOrderByClientId(clientOrderIdBytes, { gasLimit });
+
+                    if (waitForReceipt) {
+                        const receipt = await tx.wait();
+                        if (!receipt || receipt.status !== 1) {
+                            return Result.fail('Transaction reverted');
+                        }
+                        return Result.ok({
+                            txHash: receipt.hash,
+                            cancelledClientOrderId: clientOrderIdBytes,
+                        });
+                    }
+
+                    return Result.ok({
+                        txHash: tx.hash,
+                        cancelledClientOrderId: clientOrderIdBytes,
+                    });
+                });
+            } catch (e) {
+                return Result.fail(this._sanitizeError(e, 'cancelling order by client ID'));
             }
         }
 
@@ -259,24 +428,26 @@ export class CLOBClient extends BaseClient {
         }
 
         public async cancelListOrders(orderIds: string[], waitForReceipt: boolean = true): Promise<Result<{txHash: string}>> {
-            if (!this.signer || !this.tradePairsContract) {
+            if (!this.signer || !this._tradePairsDeployment()) {
                 return Result.fail('Not initialized');
             }
 
             try {
-                const gasEst = await this.tradePairsContract.cancelOrderList.estimateGas(orderIds);
-                const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
-                const tx = await this.tradePairsContract.cancelOrderList(orderIds, { gasLimit });
-                
-                if (waitForReceipt) {
-                    const receipt = await tx.wait();
-                    if (!receipt || receipt.status !== 1) {
-                        return Result.fail("Transaction reverted");
+                return await this._withL1TradePairsContract(async (contract) => {
+                    const gasEst = await contract.cancelOrderList.estimateGas(orderIds);
+                    const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
+                    const tx = await contract.cancelOrderList(orderIds, { gasLimit });
+                    
+                    if (waitForReceipt) {
+                        const receipt = await tx.wait();
+                        if (!receipt || receipt.status !== 1) {
+                            return Result.fail("Transaction reverted");
+                        }
+                        return Result.ok({ txHash: receipt.hash });
                     }
-                    return Result.ok({ txHash: receipt.hash });
-                }
-                
-                return Result.ok({ txHash: tx.hash });
+                    
+                    return Result.ok({ txHash: tx.hash });
+                });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'cancelling order list'));
             }
@@ -370,20 +541,25 @@ export class CLOBClient extends BaseClient {
                         return Result.fail(`Pair ${pair} not found`);
                     }
 
-                    const contract = this.tradePairsContract;
-                    if (!contract) {
+                    const dep = this._tradePairsDeployment();
+                    if (!dep) {
                         return Result.fail('Contract not initialized');
                     }
 
                     try {
                         const NULL_BYTES = "0x0000000000000000000000000000000000000000000000000000000000000000";
-                        
-                        const bidsData = await contract.getNBook(pairData.tradePairId, 0, 10, 10, 0, NULL_BYTES);
-                        const asksData = await contract.getNBook(pairData.tradePairId, 1, 10, 10, 0, NULL_BYTES);
-
-                        const bids = this._parseNBook(bidsData, pairData);
-                        const asks = this._parseNBook(asksData, pairData);
-
+                        const { bids, asks } = await this.withRpcFailover(
+                            this._dexalotL1DisplayName(),
+                            async (p) => {
+                                const contract = this._contractReadOnly(p, dep.address, dep.abi);
+                                const bidsData = await contract.getNBook(pairData.tradePairId, 0, 10, 10, 0, NULL_BYTES);
+                                const asksData = await contract.getNBook(pairData.tradePairId, 1, 10, 10, 0, NULL_BYTES);
+                                return {
+                                    bids: this._parseNBook(bidsData, pairData),
+                                    asks: this._parseNBook(asksData, pairData),
+                                };
+                            }
+                        );
                         return Result.ok({ pair, bids, asks });
                     } catch (e) {
                         return Result.fail(this._sanitizeError(e, 'fetching orderbook'));
@@ -407,21 +583,30 @@ export class CLOBClient extends BaseClient {
             return result;
         }
 
-        public async _getAuthHeaders(): Promise<any> {
+        public async _getAuthHeaders(): Promise<Record<string, string>> {
             if (!this.signer) throw new Error("No signer");
-            
-            if (this._cachedSignature) {
+
+            if (!this.config.timestampedAuth && this._cachedSignature) {
                 return { "x-signature": this._cachedSignature };
             }
 
-            const msg = "dexalot";
+            let msg = "dexalot";
+            const headers: Record<string, string> = {};
+            if (this.config.timestampedAuth) {
+                const ts = Date.now();
+                msg = `dexalot${ts}`;
+                headers["x-timestamp"] = String(ts);
+            }
+
             const signature = await this.signer.signMessage(msg);
             const address = await this.signer.getAddress();
-            
             const fullSig = `${address}:${signature}`;
-            this._cachedSignature = fullSig;
-            
-            return { "x-signature": fullSig };
+
+            if (!this.config.timestampedAuth) {
+                this._cachedSignature = fullSig;
+            }
+
+            return { ...headers, "x-signature": fullSig };
         }
 
         public async getOrder(orderId: string): Promise<Result<any>> {
@@ -430,29 +615,30 @@ export class CLOBClient extends BaseClient {
                 return Result.fail(validationResult.error!);
             }
 
-            const contract = this.tradePairsContract;
-            if (!this.signer || !contract) {
+            if (!this.signer || !this._tradePairsDeployment()) {
                 return Result.fail('Signer/Contract not initialized');
             }
             
             try {
-                const orderIdBytes = orderId.startsWith('0x') ? orderId : Utils.toBytes32(orderId);
-                const orderData = await contract.getOrder(orderIdBytes);
-                
-                const NULL_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
-                if (DataHexString(orderData[0]) === DataHexString(NULL_BYTES32)) {
-                    try {
-                        const address = await this.signer.getAddress();
-                        const orderData2 = await contract.getOrderByClientId(address, orderIdBytes);
-                        if (DataHexString(orderData2[0]) !== DataHexString(NULL_BYTES32)) {
-                            return Result.ok(await this._formatOrderData(orderData2));
+                return await this._withL1TradePairsContract(async (contract) => {
+                    const orderIdBytes = orderId.startsWith('0x') ? orderId : Utils.toBytes32(orderId);
+                    const orderData = await contract.getOrder(orderIdBytes);
+                    
+                    const NULL_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000";
+                    if (DataHexString(orderData[0]) === DataHexString(NULL_BYTES32)) {
+                        try {
+                            const address = await this.signer!.getAddress();
+                            const orderData2 = await contract.getOrderByClientId(address, orderIdBytes);
+                            if (DataHexString(orderData2[0]) !== DataHexString(NULL_BYTES32)) {
+                                return Result.ok(await this._formatOrderData(orderData2));
+                            }
+                        } catch {
+                            // ignore
                         }
-                    } catch (e) {
-                        // ignore
+                        return Result.fail('Order not found');
                     }
-                    return Result.fail('Order not found');
-                }
-                return Result.ok(await this._formatOrderData(orderData));
+                    return Result.ok(await this._formatOrderData(orderData));
+                });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'getting order'));
             }
@@ -464,24 +650,24 @@ export class CLOBClient extends BaseClient {
                 return Result.fail(validationResult.error!);
             }
 
-            const contract = this.tradePairsContract;
-            if (!this.signer || !contract) {
+            if (!this.signer || !this._tradePairsDeployment()) {
                 return Result.fail('Signer/Contract not initialized');
             }
              
             try {
-                const clientOrderIdBytes = clientOrderId.startsWith('0x') ? clientOrderId : Utils.toBytes32(clientOrderId);
-                const address = await this.signer.getAddress();
-                const orderData = await contract.getOrderByClientOrderId(address, clientOrderIdBytes);
-                return Result.ok(await this._formatOrderData(orderData));
+                return await this._withL1TradePairsContract(async (contract) => {
+                    const clientOrderIdBytes = clientOrderId.startsWith('0x') ? clientOrderId : Utils.toBytes32(clientOrderId);
+                    const address = await this.signer!.getAddress();
+                    const orderData = await contract.getOrderByClientOrderId(address, clientOrderIdBytes);
+                    return Result.ok(await this._formatOrderData(orderData));
+                });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'getting order by client ID'));
             }
         }
 
         public async addOrderList(orders: OrderRequest[], waitForReceipt: boolean = true): Promise<Result<{txHash: string, clientOrderIds: string[]}>> {
-            const contract = this.tradePairsContract;
-            if (!this.signer || !contract) {
+            if (!this.signer || !this._tradePairsDeployment()) {
                 return Result.fail('Signer/Contract not initialized');
             }
             
@@ -535,20 +721,22 @@ export class CLOBClient extends BaseClient {
                     ]);
                 }
 
-                const gasEst = await contract.addOrderList.estimateGas(orderTuples);
-                const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
-                
-                const tx = await contract.addOrderList(orderTuples, { gasLimit });
-                
-                if (waitForReceipt) {
-                    const receipt = await tx.wait();
-                    if (!receipt || receipt.status !== 1) {
-                        return Result.fail("Transaction reverted");
+                return await this._withL1TradePairsContract(async (contract) => {
+                    const gasEst = await contract.addOrderList.estimateGas(orderTuples);
+                    const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
+                    
+                    const tx = await contract.addOrderList(orderTuples, { gasLimit });
+                    
+                    if (waitForReceipt) {
+                        const receipt = await tx.wait();
+                        if (!receipt || receipt.status !== 1) {
+                            return Result.fail("Transaction reverted");
+                        }
+                        return Result.ok({ txHash: receipt.hash, clientOrderIds });
                     }
-                    return Result.ok({ txHash: receipt.hash, clientOrderIds });
-                }
-                
-                return Result.ok({ txHash: tx.hash, clientOrderIds });
+                    
+                    return Result.ok({ txHash: tx.hash, clientOrderIds });
+                });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'placing batch orders'));
             }
@@ -597,65 +785,71 @@ export class CLOBClient extends BaseClient {
                 const newClientOrderId = ethers.hexlify(ethers.randomBytes(32));
                 const orderIdBytes = orderId.startsWith('0x') ? orderId : Utils.toBytes32(orderId);
 
-                const gasEst = await this.tradePairsContract!.cancelReplaceOrder.estimateGas(
-                    orderIdBytes,
-                    newClientOrderId,
-                    priceWei,
-                    qtyWei
-                );
-                const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
-
-                const tx = await this.tradePairsContract!.cancelReplaceOrder(
-                    orderIdBytes,
-                    newClientOrderId,
-                    priceWei,
-                    qtyWei,
-                    { gasLimit }
-                );
-                
-                if (waitForReceipt) {
-                    const receipt = await tx.wait();
-                    if (!receipt || receipt.status !== 1) {
-                        return Result.fail("Transaction reverted");
-                    }
-                    return Result.ok({ txHash: receipt.hash });
+                if (!this._tradePairsDeployment()) {
+                    return Result.fail('TradePairs contract not initialized.');
                 }
-                
-                return Result.ok({ txHash: tx.hash });
+
+                return await this._withL1TradePairsContract(async (contract) => {
+                    const gasEst = await contract.cancelReplaceOrder.estimateGas(
+                        orderIdBytes,
+                        newClientOrderId,
+                        priceWei,
+                        qtyWei
+                    );
+                    const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
+
+                    const tx = await contract.cancelReplaceOrder(
+                        orderIdBytes,
+                        newClientOrderId,
+                        priceWei,
+                        qtyWei,
+                        { gasLimit }
+                    );
+                    
+                    if (waitForReceipt) {
+                        const receipt = await tx.wait();
+                        if (!receipt || receipt.status !== 1) {
+                            return Result.fail("Transaction reverted");
+                        }
+                        return Result.ok({ txHash: receipt.hash });
+                    }
+                    
+                    return Result.ok({ txHash: tx.hash });
+                });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'replacing order'));
             }
         }
 
         public async cancelListOrdersByClientId(clientOrderIds: string[], waitForReceipt: boolean = true): Promise<Result<{txHash: string}>> {
-            const contract = this.tradePairsContract;
-            if (!this.signer || !contract) {
+            if (!this.signer || !this._tradePairsDeployment()) {
                 return Result.fail('Signer/Contract not initialized');
             }
             
             try {
                 const ids = clientOrderIds.map(id => id.startsWith('0x') ? id : Utils.toBytes32(id));
-                const gasEst = await contract.cancelOrderListByClientIds.estimateGas(ids);
-                const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
-                const tx = await contract.cancelOrderListByClientIds(ids, { gasLimit });
-                
-                if (waitForReceipt) {
-                    const receipt = await tx.wait();
-                    if (!receipt || receipt.status !== 1) {
-                        return Result.fail("Transaction reverted");
+                return await this._withL1TradePairsContract(async (contract) => {
+                    const gasEst = await contract.cancelOrderListByClientIds.estimateGas(ids);
+                    const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
+                    const tx = await contract.cancelOrderListByClientIds(ids, { gasLimit });
+                    
+                    if (waitForReceipt) {
+                        const receipt = await tx.wait();
+                        if (!receipt || receipt.status !== 1) {
+                            return Result.fail("Transaction reverted");
+                        }
+                        return Result.ok({ txHash: receipt.hash });
                     }
-                    return Result.ok({ txHash: receipt.hash });
-                }
-                
-                return Result.ok({ txHash: tx.hash });
+                    
+                    return Result.ok({ txHash: tx.hash });
+                });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'cancelling orders by client ID'));
             }
         }
 
         public async cancelAddList(replacements: any[], waitForReceipt: boolean = true): Promise<Result<{txHash: string}>> {
-            const contract = this.tradePairsContract;
-            if (!this.signer || !contract) {
+            if (!this.signer || !this._tradePairsDeployment()) {
                 return Result.fail('Signer/Contract not initialized');
             }
 
@@ -722,20 +916,22 @@ export class CLOBClient extends BaseClient {
                     ]);
                 }
                  
-                const gasEst = await contract.cancelAddList.estimateGas(orderIds, newOrders);
-                const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
-                 
-                const tx = await contract.cancelAddList(orderIds, newOrders, { gasLimit });
-                
-                if (waitForReceipt) {
-                    const receipt = await tx.wait();
-                    if (!receipt || receipt.status !== 1) {
-                        return Result.fail("Transaction reverted");
+                return await this._withL1TradePairsContract(async (contract) => {
+                    const gasEst = await contract.cancelAddList.estimateGas(orderIds, newOrders);
+                    const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
+                     
+                    const tx = await contract.cancelAddList(orderIds, newOrders, { gasLimit });
+                    
+                    if (waitForReceipt) {
+                        const receipt = await tx.wait();
+                        if (!receipt || receipt.status !== 1) {
+                            return Result.fail("Transaction reverted");
+                        }
+                        return Result.ok({ txHash: receipt.hash });
                     }
-                    return Result.ok({ txHash: receipt.hash });
-                }
-                
-                return Result.ok({ txHash: tx.hash });
+                    
+                    return Result.ok({ txHash: tx.hash });
+                });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'cancel add list'));
             }

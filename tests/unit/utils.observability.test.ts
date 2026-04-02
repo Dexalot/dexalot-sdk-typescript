@@ -214,9 +214,9 @@ describe('observability', () => {
                 return 'result';
             });
             
-            expect(consoleInfoSpy).toHaveBeenCalledTimes(2);
-            expect(consoleInfoSpy.mock.calls[0][0]).toContain('testOp started');
-            expect(consoleInfoSpy.mock.calls[1][0]).toContain('testOp completed');
+            expect(consoleDebugSpy).toHaveBeenCalledTimes(2);
+            expect(consoleDebugSpy.mock.calls[0][0]).toContain('testOp started');
+            expect(consoleDebugSpy.mock.calls[1][0]).toContain('testOp completed');
         });
 
         it('should track failed operation', async () => {
@@ -228,7 +228,7 @@ describe('observability', () => {
                 })
             ).rejects.toThrow('test error');
             
-            expect(consoleInfoSpy).toHaveBeenCalledTimes(1);
+            expect(consoleDebugSpy).toHaveBeenCalledTimes(1);
             expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
             expect(consoleErrorSpy.mock.calls[0][0]).toContain('testOp failed');
         });
@@ -242,7 +242,7 @@ describe('observability', () => {
                 })
             ).rejects.toBe('string error');
             
-            expect(consoleInfoSpy).toHaveBeenCalledTimes(1);
+            expect(consoleDebugSpy).toHaveBeenCalledTimes(1);
             expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
             expect(consoleErrorSpy.mock.calls[0][0]).toContain('testOp failed');
             expect(consoleErrorSpy.mock.calls[0][0]).toContain('string error');
@@ -253,7 +253,7 @@ describe('observability', () => {
             
             await trackOperation(logger, 'testOp', async () => 'result', { key: 'value' });
             
-            const completedCall = consoleInfoSpy.mock.calls[1][0];
+            const completedCall = consoleDebugSpy.mock.calls[1][0];
             expect(completedCall).toContain('key');
         });
 
@@ -268,7 +268,7 @@ describe('observability', () => {
             
             await promise;
             
-            const completedCall = consoleInfoSpy.mock.calls[1][0];
+            const completedCall = consoleDebugSpy.mock.calls[1][0];
             expect(completedCall).toContain('durationMs');
             
             jest.useRealTimers();
@@ -329,10 +329,10 @@ describe('observability', () => {
             
             expect(result).toBe('success-result');
             expect(originalMethod).toHaveBeenCalledTimes(1);
-            expect(consoleInfoSpy).toHaveBeenCalledTimes(2);
-            expect(consoleInfoSpy.mock.calls[0][0]).toContain('testMethod started');
-            expect(consoleInfoSpy.mock.calls[1][0]).toContain('testMethod completed');
-            expect(consoleInfoSpy.mock.calls[1][0]).toContain('durationMs');
+            expect(consoleDebugSpy).toHaveBeenCalledTimes(2);
+            expect(consoleDebugSpy.mock.calls[0][0]).toContain('testMethod started');
+            expect(consoleDebugSpy.mock.calls[1][0]).toContain('testMethod completed');
+            expect(consoleDebugSpy.mock.calls[1][0]).toContain('durationMs');
         });
 
         it('should track failed method execution', async () => {
@@ -351,8 +351,8 @@ describe('observability', () => {
             await expect(wrapped.value()).rejects.toThrow('method failed');
             
             expect(originalMethod).toHaveBeenCalledTimes(1);
-            expect(consoleInfoSpy).toHaveBeenCalledTimes(1);
-            expect(consoleInfoSpy.mock.calls[0][0]).toContain('testMethod started');
+            expect(consoleDebugSpy).toHaveBeenCalledTimes(1);
+            expect(consoleDebugSpy.mock.calls[0][0]).toContain('testMethod started');
             expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
             expect(consoleErrorSpy.mock.calls[0][0]).toContain('testMethod failed');
             expect(consoleErrorSpy.mock.calls[0][0]).toContain('durationMs');
@@ -374,8 +374,8 @@ describe('observability', () => {
             await expect(wrapped.value()).rejects.toBe('non-error string');
             
             expect(originalMethod).toHaveBeenCalledTimes(1);
-            expect(consoleInfoSpy).toHaveBeenCalledTimes(1);
-            expect(consoleInfoSpy.mock.calls[0][0]).toContain('testMethod started');
+            expect(consoleDebugSpy).toHaveBeenCalledTimes(1);
+            expect(consoleDebugSpy.mock.calls[0][0]).toContain('testMethod started');
             expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
             expect(consoleErrorSpy.mock.calls[0][0]).toContain('testMethod failed');
             expect(consoleErrorSpy.mock.calls[0][0]).toContain('durationMs');

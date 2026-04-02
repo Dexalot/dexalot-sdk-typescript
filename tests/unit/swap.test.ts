@@ -25,7 +25,10 @@ describe('SwapClient', () => {
         jest.clearAllMocks();
 
         mockSigner = {
-            getAddress: jest.fn().mockResolvedValue('0xUser')
+            getAddress: jest.fn().mockResolvedValue('0xUser'),
+            connect: jest.fn().mockImplementation(function (this: any) {
+                return this;
+            })
         };
 
         mockAxios = {
@@ -38,9 +41,10 @@ describe('SwapClient', () => {
         (client as any).axios = mockAxios;
         client.deployments = {
             'MainnetRFQ': {
-                'Avalanche': { address: '0xRFQ' }
+                'Avalanche': { address: '0xRFQ', abi: [] }
             }
         };
+        client.connectedChainProviders = { Avalanche: {} as any };
         client.chainId = 43114;
         // Setup chainConfig for chain name resolution
         client.chainConfig = {
@@ -467,7 +471,7 @@ describe('SwapClient', () => {
                      wait: jest.fn().mockResolvedValue({ status: 1, hash: 'txHash' })
                  })
              };
-             client.mainnetRfqContracts = { 'Avalanche': mockContract as any };
+             (Contract as jest.Mock).mockImplementation(() => mockContract);
 
              const quote = {
                  chainid: 43114,
@@ -482,7 +486,8 @@ describe('SwapClient', () => {
 
              const result = await client.executeRFQSwap(quote);
              expect(result.success).toBe(true);
-             expect(result.data).toContain('txHash');
+             expect(result.data?.tx_hash).toBe('txHash');
+             expect(result.data?.operation).toBe('execute_rfq_swap');
              expect(mockContract.simpleSwap).toHaveBeenCalled();
         });
 
@@ -493,7 +498,7 @@ describe('SwapClient', () => {
                      wait: jest.fn().mockResolvedValue({ status: 1, hash: 'txHash' })
                  })
              };
-             client.mainnetRfqContracts = { 'Avalanche': mockContract as any };
+             (Contract as jest.Mock).mockImplementation(() => mockContract);
 
              const quote = {
                  chainid: 43114,
@@ -531,7 +536,7 @@ describe('SwapClient', () => {
                     wait: jest.fn().mockResolvedValue({ status: 1, hash: 'txHash' })
                 })
             };
-            client.mainnetRfqContracts = { 'Avalanche': mockContract as any };
+            (Contract as jest.Mock).mockImplementation(() => mockContract);
 
             // Quote with lowercase/snake_case fields
             const quote = {
@@ -564,7 +569,7 @@ describe('SwapClient', () => {
         });
 
         it('should return error if RFQ contract not found for chain', async () => {
-            client.mainnetRfqContracts = {}; // Empty
+            client.deployments['MainnetRFQ'] = {};
             const quote = { chainid: 43114, securequote: { signature: 's', data: {} } };
             const result = await client.executeRFQSwap(quote);
             expect(result.success).toBe(false);
@@ -590,7 +595,7 @@ describe('SwapClient', () => {
                     wait: jest.fn().mockResolvedValue({ status: 1, hash: 'txHash' })
                 })
             };
-            client.mainnetRfqContracts = { 'Avalanche': mockContract as any };
+            (Contract as jest.Mock).mockImplementation(() => mockContract);
             client.chainId = 43114;
             
             const quote = { 
@@ -611,7 +616,7 @@ describe('SwapClient', () => {
                     wait: jest.fn().mockResolvedValue({ status: 1, hash: 'txHash' })
                 })
             };
-            client.mainnetRfqContracts = { 'Avalanche': mockContract as any };
+            (Contract as jest.Mock).mockImplementation(() => mockContract);
             
             const quote = {
                 chainid: 43114,
@@ -634,7 +639,7 @@ describe('SwapClient', () => {
                     wait: jest.fn().mockResolvedValue({ status: 1, hash: 'txHash' })
                 })
             };
-            client.mainnetRfqContracts = { 'Avalanche': mockContract as any };
+            (Contract as jest.Mock).mockImplementation(() => mockContract);
             
             const quote = {
                 chainid: 43114,
@@ -651,7 +656,7 @@ describe('SwapClient', () => {
             const mockContract = { 
                 simpleSwap: jest.fn().mockResolvedValue({ hash: 'txHash' })
             };
-            client.mainnetRfqContracts = { 'Avalanche': mockContract as any };
+            (Contract as jest.Mock).mockImplementation(() => mockContract);
             client.chainId = 43114;
             
             const quote = { 
@@ -663,8 +668,8 @@ describe('SwapClient', () => {
             const result = await client.executeRFQSwap(quote, false);
             
             expect(result.success).toBe(true);
-            expect(result.data).toContain('txHash');
-            expect(result.data).toContain('sent');
+            expect(result.data?.tx_hash).toBe('txHash');
+            expect(result.data?.operation).toBe('execute_rfq_swap');
             expect(mockContract.simpleSwap).toHaveBeenCalled();
         });
 
@@ -675,7 +680,7 @@ describe('SwapClient', () => {
                     wait: jest.fn().mockResolvedValue({ status: 0, hash: 'txHash' })
                 })
             };
-            client.mainnetRfqContracts = { 'Avalanche': mockContract as any };
+            (Contract as jest.Mock).mockImplementation(() => mockContract);
             client.chainId = 43114;
             
             const quote = { 
@@ -694,7 +699,7 @@ describe('SwapClient', () => {
             const mockContract = {
                 simpleSwap: jest.fn().mockRejectedValue(new Error('Contract error'))
             };
-            client.mainnetRfqContracts = { 'Avalanche': mockContract as any };
+            (Contract as jest.Mock).mockImplementation(() => mockContract);
             
             const quote = {
                 chainid: 43114,

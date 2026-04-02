@@ -4,6 +4,7 @@ import { API_URL, ENDPOINTS, KNOWN_CHAIN_IDS, ENV } from '../constants.js';
 import { Pair, TokenInfo, DeploymentInfo, ChainConfig } from '../types/index.js';
 import { parseRevertReason } from '../errors.js';
 import { DexalotConfig, createConfig, loadConfigFromEnv } from './config.js';
+import { WebSocketManager } from '../utils/websocketManager.js';
 import { Result } from '../utils/result.js';
 import { AsyncRateLimiter } from '../utils/rateLimit.js';
 import { AsyncNonceManager } from '../utils/nonceManager.js';
@@ -19,6 +20,8 @@ export class BaseClient {
     public signer: Signer | null = null;
     public provider: Provider | null = null;
     public subnetProvider: Provider | null = null;
+    /** WebSocket manager when enabled (see CLOBClient subscribeToEvents). */
+    public _wsManager: WebSocketManager | null = null;
     public apiBaseUrl: string;
     public axios: AxiosInstance;
     
@@ -80,8 +83,8 @@ export class BaseClient {
     constructor(configOrSigner?: DexalotConfig | Signer | string, baseUrl?: string) {
         // Determine configuration
         if (configOrSigner && typeof configOrSigner === 'object' && 'parentEnv' in configOrSigner) {
-            // DexalotConfig provided
-            this.config = configOrSigner;
+            // DexalotConfig provided — merge with defaults and validate
+            this.config = createConfig(configOrSigner as Partial<DexalotConfig>);
             this.parentEnv = this.config.parentEnv;
             this.apiBaseUrl = this.config.apiBaseUrl || API_URL.TESTNET;
             
@@ -150,6 +153,52 @@ export class BaseClient {
             baseURL: this.apiBaseUrl,
             timeout: this.config.timeoutRead,
         });
+    }
+
+    /**
+     * Reject http:// RPC URLs unless allowInsecureRpc is enabled (parity with Python SDK).
+     */
+    public _rejectInsecureRpcUrls(urls: string[]): string[] {
+        const insecure = urls.filter(u => u.toLowerCase().startsWith('http://'));
+        if (insecure.length > 0 && !this.config.allowInsecureRpc) {
+            throw new Error(
+                `Insecure RPC URL(s) rejected (http://): ${insecure.join(', ')}. ` +
+                    'Set allowInsecureRpc=true or DEXALOT_ALLOW_INSECURE_RPC=true to permit http:// endpoints.'
+            );
+        }
+        return urls;
+    }
+
+    /**
+     * Resolve RPC URL list: env override DEXALOT_RPC_{chainId} / DEXALOT_RPC_{SYMBOL}, else API value (comma-separated).
+     */
+    public _getRpcUrls(
+        chainId: number | undefined,
+        nativeSymbol: string | undefined,
+        apiRpc: string | undefined
+    ): string[] {
+        const env =
+            typeof process !== 'undefined' && process.env ? process.env : ({} as NodeJS.ProcessEnv);
+
+        if (chainId !== undefined && chainId !== null) {
+            const envRpc = env[`DEXALOT_RPC_${chainId}`];
+            if (envRpc) {
+                const urls = envRpc.split(',').map(u => u.trim()).filter(Boolean);
+                return this._rejectInsecureRpcUrls(urls);
+            }
+        }
+        if (nativeSymbol) {
+            const envRpc = env[`DEXALOT_RPC_${nativeSymbol.toUpperCase()}`];
+            if (envRpc) {
+                const urls = envRpc.split(',').map(u => u.trim()).filter(Boolean);
+                return this._rejectInsecureRpcUrls(urls);
+            }
+        }
+        if (apiRpc) {
+            const urls = apiRpc.split(',').map(u => u.trim()).filter(Boolean);
+            return this._rejectInsecureRpcUrls(urls);
+        }
+        return [];
     }
 
     /**
@@ -333,14 +382,28 @@ export class BaseClient {
                 if (envType === 'subnet') {
                     this.subnetChainId = chainId;
                     this.subnetEnv = envString;
-                    
-                    if (rpc) {
-                        this.subnetProvider = new JsonRpcProvider(rpc);
-                        if (!this.provider) {
-                            this.provider = this.subnetProvider;
+                    const subnetNative = env.native_token_symbol || 'ALOT';
+                    const rpcUrls = this._getRpcUrls(chainId, subnetNative, rpc);
+
+                    if (rpcUrls.length > 0) {
+                        const primaryRpc = rpcUrls[0];
+                        try {
+                            if (this._providerManager) {
+                                this._providerManager.addProviders('DEXALOT_L1', rpcUrls);
+                                const primary = this._providerManager.getProvider('DEXALOT_L1');
+                                this.subnetProvider =
+                                    (primary as JsonRpcProvider) ?? new JsonRpcProvider(primaryRpc);
+                            } else {
+                                this.subnetProvider = new JsonRpcProvider(primaryRpc);
+                            }
+                            if (!this.provider) {
+                                this.provider = this.subnetProvider;
+                            }
+                        } catch (e) {
+                            this._logger.warn('Failed to init subnet provider', { error: String(e) });
                         }
                     }
-                    
+
                     // Ensure Signer is connected to subnet Provider
                     if (this.signer && !this.signer.provider && this.provider) {
                         try {
@@ -350,11 +413,11 @@ export class BaseClient {
                         }
                     }
                 }
-                
+
                 // Process mainnet environments
                 if (envType === 'mainnet' && name) {
                     const nativeSymbol = env.native_token_symbol || 'ETH';
-                    
+
                     this.chainConfig[name] = {
                         chain_id: chainId,
                         rpc: rpc,
@@ -363,15 +426,17 @@ export class BaseClient {
                         env: envString
                     };
 
-                    // Initialize mainnet provider
-                    if (rpc) {
+                    const rpcUrls = this._getRpcUrls(chainId, nativeSymbol, rpc);
+                    if (rpcUrls.length > 0) {
                         try {
-                            const provider = new JsonRpcProvider(rpc);
-                            this.connectedChainProviders[name] = provider;
-                            
-                            // Register with provider manager for failover
+                            const primaryRpc = rpcUrls[0];
                             if (this._providerManager) {
-                                this._providerManager.addProviders(name, [rpc]);
+                                this._providerManager.addProviders(name, rpcUrls);
+                                const primary = this._providerManager.getProvider(name);
+                                this.connectedChainProviders[name] =
+                                    (primary as JsonRpcProvider) ?? new JsonRpcProvider(primaryRpc);
+                            } else {
+                                this.connectedChainProviders[name] = new JsonRpcProvider(primaryRpc);
                             }
                         } catch (e) {
                             this._logger.warn(`Failed to init provider for ${name}`, { error: String(e) });
@@ -708,7 +773,7 @@ export class BaseClient {
                 }
             }
 
-            this._logger.info('Signer updated and contracts reconnected');
+            this._logger.debug('Signer updated and contracts reconnected');
             return Result.ok('Signer updated successfully');
         } catch (error) {
             return Result.fail(this._sanitizeError(error, 'updating signer'));
@@ -950,9 +1015,199 @@ export class BaseClient {
     }
 
     /**
+     * Map user-facing chain name to ProviderManager registry key (matches Python SDK).
+     */
+    public _providerManagerChainKey(chainDisplayName: string): string {
+        return chainDisplayName === 'Dexalot L1' ? 'DEXALOT_L1' : chainDisplayName;
+    }
+
+    /**
+     * Current JsonRpcProvider for a chain: ProviderManager selection first, else subnet / connected map.
+     */
+    public getProviderForChain(chainDisplayName: string): JsonRpcProvider | null {
+        const key = this._providerManagerChainKey(chainDisplayName);
+        if (this._providerManager) {
+            const p = this._providerManager.getProvider(key);
+            if (p) {
+                return p as JsonRpcProvider;
+            }
+        }
+        if (chainDisplayName === 'Dexalot L1') {
+            return (this.subnetProvider as JsonRpcProvider) ?? null;
+        }
+        return this.connectedChainProviders[chainDisplayName] ?? null;
+    }
+
+    /** Whether balance-style RPC can be attempted for this chain display name. */
+    public isChainRpcAvailable(chainDisplayName: string): boolean {
+        if (chainDisplayName === 'Dexalot L1') {
+            return (
+                this.subnetProvider != null ||
+                (!!this._providerManager && this._providerManager.getProviderCount('DEXALOT_L1') > 0)
+            );
+        }
+        return (
+            chainDisplayName in this.connectedChainProviders ||
+            (!!this._providerManager && this._providerManager.getProviderCount(chainDisplayName) > 0)
+        );
+    }
+
+    /**
+     * Connected mainnet-style chain names plus any chain_config entry that has providers registered.
+     */
+    public getAvailableChainNames(): string[] {
+        const chains = new Set<string>(Object.keys(this.connectedChainProviders));
+        if (this._providerManager) {
+            for (const chainName of Object.keys(this.chainConfig)) {
+                if (this._providerManager.getProviderCount(chainName) > 0) {
+                    chains.add(chainName);
+                }
+            }
+        }
+        return Array.from(chains);
+    }
+
+    /**
+     * Subnet chain display name for ProviderManager key `DEXALOT_L1` / Python `w3_l1` flows.
+     */
+    protected _dexalotL1DisplayName(): string {
+        return 'Dexalot L1';
+    }
+
+    protected _tradePairsDeployment(): { address: string; abi: any[] } | null {
+        const d = this.deployments['TradePairs'];
+        if (!d || typeof d !== 'object') return null;
+        const first = Object.values(d)[0] as { address?: string; abi?: unknown };
+        if (!first?.address) return null;
+        const abi = Array.isArray(first.abi) ? first.abi : [];
+        return { address: first.address, abi };
+    }
+
+    protected _portfolioSubDeployment(): { address: string; abi: any[] } | null {
+        const d = this.deployments['PortfolioSub'] as { address?: string; abi?: unknown } | undefined;
+        if (!d?.address) return null;
+        const abi = Array.isArray(d.abi) ? d.abi : [];
+        return { address: d.address, abi };
+    }
+
+    protected _portfolioMainDeployment(
+        chainName: string
+    ): { address: string; abi: any[] } | null {
+        const m = this.deployments['PortfolioMain'] as Record<string, { address?: string; abi?: unknown }> | undefined;
+        const dep = m?.[chainName];
+        if (!dep?.address) return null;
+        const abi = Array.isArray(dep.abi) ? dep.abi : [];
+        return { address: dep.address, abi };
+    }
+
+    protected _mainnetRfqDeployment(
+        chainName: string
+    ): { address: string; abi: any[] } | null {
+        const m = this.deployments['MainnetRFQ'] as Record<string, { address?: string; abi?: unknown }> | undefined;
+        const dep = m?.[chainName];
+        if (!dep?.address) return null;
+        const abi = Array.isArray(dep.abi) ? dep.abi : [];
+        return { address: dep.address, abi };
+    }
+
+    /** Signed contract on a specific RPC (failover-aware). */
+    protected _contractForSigner(
+        provider: JsonRpcProvider,
+        address: string,
+        abi: any[]
+    ): Contract {
+        if (!this.signer) {
+            throw new Error('Signer required');
+        }
+        return new Contract(address, abi, this.signer.connect(provider));
+    }
+
+    /** Read-only contract for view calls on a specific RPC. */
+    protected _contractReadOnly(provider: JsonRpcProvider, address: string, abi: any[]): Contract {
+        return new Contract(address, abi, provider);
+    }
+
+    protected _rpcRetryOptions(): RetryOptions {
+        return {
+            maxAttempts: this.config.retryMaxAttempts,
+            initialDelay: this.config.retryInitialDelay,
+            maxDelay: this.config.retryMaxDelay,
+            exponentialBase: this.config.retryExponentialBase,
+            retryOnStatus: this.config.retryOnStatus,
+            retryOnNetworkError: true,
+        };
+    }
+
+    protected async acquireRpcRateLimiter(): Promise<void> {
+        if (this._rpcRateLimiter) {
+            await this._rpcRateLimiter.acquire();
+        }
+    }
+
+    /**
+     * Run an RPC op with optional per-provider retry, then failover to the next URL on failure
+     * (matches Python `_rpc_call_with_failover` for read-style calls).
+     */
+    public async withRpcFailover<T>(
+        chainDisplayName: string,
+        op: (provider: JsonRpcProvider) => Promise<T>
+    ): Promise<T> {
+        const key = this._providerManagerChainKey(chainDisplayName);
+        const pm = this._providerManager;
+        const count = pm ? pm.getProviderCount(key) : 0;
+        const useFailover = !!pm && this.config.providerFailoverEnabled && count > 0;
+
+        const runWithRetry = async (p: JsonRpcProvider) => {
+            if (this.config.retryEnabled) {
+                const wrapped = asyncRetry(async () => op(p), this._rpcRetryOptions());
+                return wrapped();
+            }
+            return op(p);
+        };
+
+        if (!useFailover) {
+            const p = this.getProviderForChain(chainDisplayName);
+            if (!p) {
+                throw new Error(`No RPC provider for chain '${chainDisplayName}'`);
+            }
+            await this.acquireRpcRateLimiter();
+            return runWithRetry(p);
+        }
+
+        let lastError: unknown;
+        for (let attempt = 0; attempt < count; attempt++) {
+            const prov = pm!.getProvider(key);
+            if (!prov) {
+                break;
+            }
+            const idx = pm!.getProviderIndex(key, prov) ?? 0;
+            try {
+                await this.acquireRpcRateLimiter();
+                const result = await runWithRetry(prov as JsonRpcProvider);
+                pm!.markSuccess(key, idx);
+                return result;
+            } catch (e) {
+                lastError = e;
+                pm!.markFailure(key, idx);
+            }
+        }
+        if (lastError instanceof Error) {
+            throw lastError;
+        }
+        throw new Error(
+            `All RPC providers failed for chain '${chainDisplayName}'` +
+                (lastError !== undefined ? `: ${String(lastError)}` : '')
+        );
+    }
+
+    /**
      * Close the client and clean up resources.
      */
     public close(): void {
+        if (this._wsManager) {
+            this._wsManager.disconnect();
+            this._wsManager = null;
+        }
         // Reset rate limiters
         if (this._apiRateLimiter) {
             this._apiRateLimiter.reset();
@@ -960,12 +1215,12 @@ export class BaseClient {
         if (this._rpcRateLimiter) {
             this._rpcRateLimiter.reset();
         }
-        
+
         // Clear nonce manager
         if (this._nonceManager) {
             this._nonceManager.clearAll();
         }
-        
-        this._logger.info('Dexalot client closed');
+
+        this._logger.debug('Dexalot client closed');
     }
 }

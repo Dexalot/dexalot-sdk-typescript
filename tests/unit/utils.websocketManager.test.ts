@@ -169,7 +169,11 @@ describe('WebSocketManager', () => {
             const mockWs = (manager as any).ws as MockWebSocket;
             const unsubscribeMessages = mockWs.sentMessages.filter(msg => {
                 const parsed = JSON.parse(msg);
-                return parsed.type === 'unsubscribe' && parsed.topic === 'topic1';
+                return (
+                    parsed.type === 'unsubscribe' &&
+                    (parsed.topic === 'topic1' ||
+                        (Array.isArray(parsed.topics) && parsed.topics.includes('topic1')))
+                );
             });
             expect(unsubscribeMessages.length).toBeGreaterThan(0);
         });

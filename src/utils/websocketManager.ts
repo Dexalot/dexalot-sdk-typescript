@@ -6,9 +6,42 @@
  * In browser environments, the native WebSocket API is used.
  */
 
+import { getLogger } from './observability.js';
+
+const wsLogger = getLogger('dexalot_sdk.websocket');
+
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 
+/** ReadyState when socket is open (avoids DOM vs undici `WebSocket` static typing clashes). */
+const WS_OPEN = 1;
+
+/**
+ * Narrow WebSocket surface used here — `@types/node` can expose undici's WebSocket, which does not
+ * match the DOM `WebSocket` type expected by some TS configs.
+ */
+type WsConnection = {
+    readonly readyState: number;
+    close(): void;
+    send(data: string): void;
+    onopen: ((event: unknown) => void) | null;
+    onclose: ((event: unknown) => void) | null;
+    onerror: ((event: unknown) => void) | null;
+    onmessage: ((event: { data: unknown }) => void) | null;
+};
+
 export type MessageCallback = (data: any) => void;
+
+/** Optional Dexalot private-topic auth (matches Python WebSocketManager). */
+export interface WebSocketDexalotAuth {
+    getAddress(): Promise<string>;
+    signMessage(message: string): Promise<string>;
+}
+
+export interface WebSocketDexalotOptions {
+    /** Milliseconds added to auth timestamp (clock skew), default from env parity */
+    wsTimeOffsetMs?: number;
+    auth?: WebSocketDexalotAuth;
+}
 
 export interface WebSocketConfig {
     /** Seconds between ping messages (default: 30) */
@@ -34,17 +67,24 @@ const DEFAULT_CONFIG: Required<WebSocketConfig> = {
     reconnectMaxAttempts: 10,
 };
 
+export interface OrderbookSubscriptionMeta {
+    kind: 'orderbook';
+    pair: string;
+    decimal: number;
+}
+
 interface Subscription {
     topic: string;
     callback: MessageCallback;
     isPrivate: boolean;
+    meta?: OrderbookSubscriptionMeta | null;
 }
 
 /**
  * WebSocket manager with auto-reconnection, heartbeat, and subscription management.
  */
 export class WebSocketManager {
-    private ws: WebSocket | null = null;
+    private ws: WsConnection | null = null;
     private state: ConnectionState = 'disconnected';
     private subscriptions: Map<string, Subscription> = new Map();
     private reconnectAttempts: number = 0;
@@ -53,18 +93,22 @@ export class WebSocketManager {
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     private readonly wsUrl: string;
     private readonly config: Required<WebSocketConfig>;
-    private authSignature: string | null = null;
+    private readonly dexalot: WebSocketDexalotOptions;
+    /** Legacy static signature for private topics when `dexalot.auth` is not set. */
+    private legacyAuthSignature: string | null = null;
 
-    constructor(wsUrl: string, config: WebSocketConfig = {}) {
+    constructor(wsUrl: string, config: WebSocketConfig = {}, dexalot: WebSocketDexalotOptions = {}) {
         this.wsUrl = wsUrl;
         this.config = { ...DEFAULT_CONFIG, ...config };
+        this.dexalot = dexalot;
     }
 
     /**
-     * Set authentication signature for private subscriptions.
+     * Set a static signature for private subscriptions (tests / simple integrations).
+     * When `dexalot.auth` is provided in the constructor, that takes precedence.
      */
     setAuthSignature(signature: string): void {
-        this.authSignature = signature;
+        this.legacyAuthSignature = signature;
     }
 
     /**
@@ -78,7 +122,9 @@ export class WebSocketManager {
         this.state = 'connecting';
         
         try {
-            this.ws = new WebSocket(this.wsUrl);
+            const WsCtor = (globalThis as unknown as { WebSocket: new (url: string) => WsConnection })
+                .WebSocket;
+            this.ws = new WsCtor(this.wsUrl);
             this.setupEventHandlers();
         } catch (error) {
             console.error('WebSocket connection error:', error);
@@ -111,7 +157,12 @@ export class WebSocketManager {
         };
 
         this.ws.onmessage = (event) => {
-            this.handleMessage(event.data);
+            const d: unknown = event.data;
+            if (typeof d === 'string' || Buffer.isBuffer(d)) {
+                this.handleMessage(d);
+            } else {
+                this.handleMessage(String(d));
+            }
         };
     }
 
@@ -123,36 +174,66 @@ export class WebSocketManager {
         this.resetPongTimer();
 
         try {
-            const message = JSON.parse(data.toString());
-            
-            // Check if it's a subscription message
-            if (message.type === 'message' && message.data) {
-                const topic = message.data.topic || message.topic;
+            const message = JSON.parse(data.toString()) as Record<string, unknown>;
+
+            // Dexalot order book stream (docs/websocket.md)
+            if (message['type'] === 'orderBooks' && message['pair']) {
+                const pair = message['pair'] as string;
+                for (const [, sub] of this.subscriptions) {
+                    if (sub.meta?.kind === 'orderbook' && sub.meta.pair === pair) {
+                        try {
+                            sub.callback(message);
+                        } catch {
+                            /* ignore callback errors */
+                        }
+                    }
+                }
+                return;
+            }
+
+            // Wrapped message shape
+            if (message['type'] === 'message' && message['data']) {
+                const inner = message['data'] as Record<string, unknown>;
+                const topic = (inner['topic'] || message['topic']) as string | undefined;
                 if (topic && this.subscriptions.has(topic)) {
                     const sub = this.subscriptions.get(topic)!;
-                    sub.callback(message.data);
+                    sub.callback(message['data']);
                 }
             }
-            
-            // Broadcast to all subscriptions that match
+
+            // Topic-keyed routing
+            const topicField = message['topic'] as string | undefined;
+            if (topicField && this.subscriptions.has(topicField)) {
+                const sub = this.subscriptions.get(topicField)!;
+                sub.callback(message);
+                return;
+            }
+
             for (const [topic, sub] of this.subscriptions) {
-                if (message.topic === topic || message.type === topic) {
+                if (message['type'] === topic) {
+                    if (sub.meta?.kind === 'orderbook') continue;
                     sub.callback(message);
                 }
             }
-        } catch (error) {
+        } catch {
             // Non-JSON message, ignore
         }
     }
 
     /**
      * Subscribe to a topic.
+     * @param meta When set with kind `orderbook`, sends Dexalot orderbook subscribe wire payload.
      */
-    subscribe(topic: string, callback: MessageCallback, isPrivate: boolean = false): void {
-        this.subscriptions.set(topic, { topic, callback, isPrivate });
+    subscribe(
+        topic: string,
+        callback: MessageCallback,
+        isPrivate: boolean = false,
+        meta?: OrderbookSubscriptionMeta | null
+    ): void {
+        this.subscriptions.set(topic, { topic, callback, isPrivate, meta: meta ?? null });
 
         if (this.state === 'connected') {
-            this.sendSubscription(topic, isPrivate);
+            void this.sendSubscription(topic);
         }
     }
 
@@ -160,41 +241,101 @@ export class WebSocketManager {
      * Unsubscribe from a topic.
      */
     unsubscribe(topic: string): void {
+        const spec = this.subscriptions.get(topic);
         this.subscriptions.delete(topic);
 
-        if (this.state === 'connected' && this.ws) {
-            const message = JSON.stringify({
-                type: 'unsubscribe',
-                topic: topic,
-            });
-            this.ws.send(message);
+        if (this.state === 'connected' && this.ws && spec) {
+            let payload: Record<string, unknown>;
+            if (spec.meta?.kind === 'orderbook') {
+                payload = {
+                    type: 'unsubscribe',
+                    data: spec.meta.pair,
+                    pair: spec.meta.pair,
+                    decimal: spec.meta.decimal,
+                };
+                void this.appendTraderAddress(payload).then(() => {
+                    if (this.ws && this.state === 'connected') {
+                        this.ws.send(JSON.stringify(payload));
+                    }
+                });
+            } else {
+                payload = { type: 'unsubscribe', topics: [topic] };
+                this.ws.send(JSON.stringify(payload));
+            }
+        }
+    }
+
+    private async appendTraderAddress(payload: Record<string, unknown>): Promise<void> {
+        const auth = this.dexalot.auth;
+        if (!auth) return;
+        try {
+            const addr = await auth.getAddress();
+            if (addr) payload['traderaddress'] = addr;
+        } catch {
+            /* ignore */
         }
     }
 
     /**
      * Send subscription message to server.
      */
-    private sendSubscription(topic: string, isPrivate: boolean): void {
+    private async sendSubscription(topic: string): Promise<void> {
         if (!this.ws || this.state !== 'connected') return;
 
-        const message: any = {
-            type: 'subscribe',
-            topic: topic,
-        };
+        const sub = this.subscriptions.get(topic);
+        if (!sub) return;
 
-        if (isPrivate && this.authSignature) {
-            message.signature = this.authSignature;
+        if (sub.meta?.kind === 'orderbook') {
+            const payload: Record<string, unknown> = {
+                type: 'subscribe',
+                data: sub.meta.pair,
+                pair: sub.meta.pair,
+                decimal: sub.meta.decimal,
+            };
+            await this.appendTraderAddress(payload);
+            this.ws.send(JSON.stringify(payload));
+            return;
         }
 
-        this.ws.send(JSON.stringify(message));
+        if (sub.isPrivate && this.dexalot.auth) {
+            const auth = this.dexalot.auth;
+            const address = await auth.getAddress();
+            const offset = this.dexalot.wsTimeOffsetMs ?? 0;
+            const ts = Date.now() + offset;
+            const msgToSign = `${address}${ts}`;
+            const signature = await auth.signMessage(msgToSign);
+            const sigHex = signature.startsWith('0x') ? signature.slice(2) : signature;
+            const payload = {
+                type: 'subscribe',
+                topics: [topic],
+                address,
+                signature: sigHex,
+                timestamp: ts,
+            };
+            this.ws.send(JSON.stringify(payload));
+            return;
+        }
+
+        if (sub.isPrivate && this.legacyAuthSignature) {
+            this.ws.send(
+                JSON.stringify({
+                    type: 'subscribe',
+                    topic,
+                    signature: this.legacyAuthSignature,
+                })
+            );
+            return;
+        }
+
+        this.ws.send(JSON.stringify({ type: 'subscribe', topics: [topic] }));
     }
 
     /**
      * Resubscribe to all topics after reconnection.
      */
     private resubscribeAll(): void {
-        for (const [topic, sub] of this.subscriptions) {
-            this.sendSubscription(topic, sub.isPrivate);
+        for (const [topic] of this.subscriptions) {
+            void this.sendSubscription(topic);
         }
     }
 
@@ -271,7 +412,9 @@ export class WebSocketManager {
             this.config.reconnectMaxDelay
         );
 
-        console.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+        wsLogger.debug(
+            `Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`
+        );
 
         this.reconnectTimer = setTimeout(() => {
             this.connect();
@@ -304,7 +447,7 @@ export class WebSocketManager {
             this.ws.onerror = null;
             this.ws.onmessage = null;
             
-            if (this.ws.readyState === WebSocket.OPEN) {
+            if (this.ws.readyState === WS_OPEN) {
                 this.ws.close();
             }
             this.ws = null;
