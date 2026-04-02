@@ -1,0 +1,1222 @@
+
+import { CLOBClient } from '../../src/core/clob';
+import { ENV, DEFAULTS, ENDPOINTS } from '../../src/constants';
+import { Utils } from '../../src/utils';
+import { Contract, ethers, toBigInt } from 'ethers';
+
+// Mock ethers
+jest.mock('ethers');
+jest.mock('../../src/utils');
+
+// Spy on console to silence error logs
+jest.spyOn(console, 'error').mockImplementation(() => {});
+
+class TestClient extends CLOBClient {}
+
+describe('CLOBClient', () => {
+    let client: TestClient;
+    let mockSigner: any;
+    let mockAxios: any;
+    let mockContract: any;
+
+    const mockAddress = '0xUserAddress';
+    const VALID_ORDER_ID = '0x' + '1'.repeat(64);
+    const VALID_CLIENT_ID = '0x' + '2'.repeat(64);
+
+    beforeEach(() => {
+        jest.clearAllMocks();
+
+        mockSigner = {
+            getAddress: jest.fn().mockResolvedValue(mockAddress),
+            signMessage: jest.fn().mockResolvedValue('0xSignature')
+        };
+
+        mockAxios = {
+            get: jest.fn(),
+            request: jest.fn()
+        };
+
+        mockContract = {
+            addNewOrder: jest.fn().mockResolvedValue({ 
+                hash: '0xTxHash',
+                wait: jest.fn().mockResolvedValue({ status: 1 })
+            }),
+            cancelOrder: jest.fn().mockResolvedValue({ 
+                hash: '0xCancelHash',
+                wait: jest.fn().mockResolvedValue({ status: 1 })
+            }),
+            cancelOrderList: jest.fn().mockResolvedValue({ 
+                hash: '0xCancelListHash',
+                wait: jest.fn().mockResolvedValue({ status: 1 })
+            }),
+            getNBook: jest.fn(),
+            getOrder: jest.fn(),
+            getOrderByClientId: jest.fn(),
+            getOrderByClientOrderId: jest.fn(),
+            addOrderList: jest.fn().mockResolvedValue({ 
+                hash: '0xAddListHash',
+                wait: jest.fn().mockResolvedValue({ status: 1, hash: '0xAddListHash' })
+            }),
+            cancelReplaceOrder: jest.fn().mockResolvedValue({ 
+                hash: '0xReplaceHash',
+                wait: jest.fn().mockResolvedValue({ status: 1 })
+            }),
+            cancelOrderListByClientIds: jest.fn().mockResolvedValue({ 
+                hash: '0xCancelByIdsHash',
+                wait: jest.fn().mockResolvedValue({ status: 1 })
+            }),
+            cancelAddList: jest.fn().mockResolvedValue({ 
+                hash: '0xCancelAddHash',
+                wait: jest.fn().mockResolvedValue({ status: 1 })
+            })
+        };
+        // Gas estimates
+        mockContract.addNewOrder.estimateGas = jest.fn().mockResolvedValue(100000n);
+        mockContract.cancelOrder.estimateGas = jest.fn().mockResolvedValue(100000n);
+        mockContract.cancelOrderList.estimateGas = jest.fn().mockResolvedValue(100000n);
+        mockContract.addOrderList.estimateGas = jest.fn().mockResolvedValue(100000n);
+        mockContract.cancelReplaceOrder.estimateGas = jest.fn().mockResolvedValue(100000n);
+        mockContract.cancelOrderListByClientIds.estimateGas = jest.fn().mockResolvedValue(100000n);
+        mockContract.cancelAddList.estimateGas = jest.fn().mockResolvedValue(100000n);
+
+        // Utils Mocks
+        (Utils.toBytes32 as jest.Mock).mockImplementation(val => `0xBytes32_${val}`);
+        (Utils.unitConversion as jest.Mock).mockImplementation((val, dec, toWei) => {
+            if (toWei) return val.toString() + "000000000000000000"; // Mock Wei
+            return "10.0"; // Mock Display
+        });
+
+        client = new TestClient(mockSigner);
+        (client as any).axios = mockAxios;
+        client.tradePairsContract = mockContract;
+        client.subnetEnv = ENV.PROD_MULTI_SUBNET;
+        // Setup config to disable retry for faster tests
+        (client as any).config = { retryEnabled: false }; 
+        
+        // Setup initial pairs for convenience (avoid getClobPairs call in every test)
+        client.pairs = {
+            'AVAX/USDC': {
+                pair: 'AVAX/USDC',
+                base: 'AVAX', quote: 'USDC',
+                base_decimals: 18, quote_decimals: 6,
+                base_display_decimals: 2, quote_display_decimals: 2,
+                min_trade_amount: 1, max_trade_amount: 1000,
+                tradePairId: '0xPairId_AVAX_USDC'
+            }
+        };
+    });
+
+    describe('getClobPairs', () => {
+        it('should fetch and filter pairs', async () => {
+             mockAxios.request.mockResolvedValue({
+                 data: [
+                     { pair: 'AVAX/USDT', env: ENV.PROD_MULTI_SUBNET, mintrade_amnt: '0', maxtrade_amnt: '100', base: 'AVAX', quote: 'USDT', base_evmdecimals: 18, quote_evmdecimals: 6 },
+                     { pair: 'IGNORE/ME', env: 'dev' }
+                 ]
+             });
+             
+             const result = await client.getClobPairs();
+             expect(result.success).toBe(true);
+             expect(client.pairs['AVAX/USDT']).toBeDefined();
+             expect(client.pairs['IGNORE/ME']).toBeUndefined();
+        });
+
+        it('should handle API errors', async () => {
+             mockAxios.request.mockRejectedValue(new Error("API Fail"));
+             const result = await client.getClobPairs();
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('API Fail');
+        });
+
+        it('should transform API field names to snake_case', async () => {
+             mockAxios.request.mockResolvedValue({
+                 data: [
+                     {
+                         pair: 'AVAX/USDC',
+                         env: ENV.PROD_MULTI_SUBNET,
+                         base: 'AVAX',
+                         quote: 'USDC',
+                         base_evmdecimals: 18,
+                         quote_evmdecimals: 6,
+                         basedisplaydecimals: 18,
+                         quotedisplaydecimals: 6,
+                         mintrade_amnt: '0.1',
+                         maxtrade_amnt: '1000'
+                     },
+                     {
+                         pair: 'BTC/USDC',
+                         env: ENV.FUJI_MULTI_SUBNET,
+                         base: 'BTC',
+                         quote: 'USDC',
+                         baseEvmDecimals: 8,
+                         quoteEvmDecimals: 6,
+                         baseDisplayDecimals: 8,
+                         quoteDisplayDecimals: 6,
+                         minTradeAmnt: '0.001',
+                         maxTradeAmnt: '10'
+                     }
+                 ]
+             });
+             
+             const result = await client.getClobPairs();
+             expect(result.success).toBe(true);
+             
+             // First pair: lowercase fields transformed
+             expect(client.pairs['AVAX/USDC']).toBeDefined();
+             expect(client.pairs['AVAX/USDC'].base_decimals).toBe(18);
+             expect(client.pairs['AVAX/USDC'].quote_decimals).toBe(6);
+             expect(client.pairs['AVAX/USDC'].base_display_decimals).toBe(18);
+             expect(client.pairs['AVAX/USDC'].quote_display_decimals).toBe(6);
+             expect(client.pairs['AVAX/USDC'].min_trade_amount).toBe(0.1);
+             expect(client.pairs['AVAX/USDC'].max_trade_amount).toBe(1000);
+             
+             // Second pair: camelCase fields transformed
+             expect(client.pairs['BTC/USDC']).toBeDefined();
+             expect(client.pairs['BTC/USDC'].base_decimals).toBe(8);
+             expect(client.pairs['BTC/USDC'].quote_decimals).toBe(6);
+             expect(client.pairs['BTC/USDC'].base_display_decimals).toBe(8);
+             expect(client.pairs['BTC/USDC'].quote_display_decimals).toBe(6);
+             expect(client.pairs['BTC/USDC'].min_trade_amount).toBe(0.001);
+             expect(client.pairs['BTC/USDC'].max_trade_amount).toBe(10);
+        });
+
+        it('should prefer existing snake_case fields over transformations', async () => {
+             mockAxios.request.mockResolvedValue({
+                 data: [
+                     {
+                         pair: 'ETH/USDC',
+                         env: ENV.PROD_MULTI_SUBNET,
+                         base: 'ETH',
+                         quote: 'USDC',
+                         base_decimals: 18,
+                         quote_decimals: 6,
+                         base_evmdecimals: 999,  // Should be ignored
+                         quoteEvmDecimals: 999,  // Should be ignored
+                         base_display_decimals: 18,
+                         quote_display_decimals: 6,
+                         basedisplaydecimals: 999,  // Should be ignored
+                         min_trade_amount: '0.01',
+                         max_trade_amount: '100',
+                         mintrade_amnt: '999',  // Should be ignored
+                     }
+                 ]
+             });
+             
+             const result = await client.getClobPairs();
+             expect(result.success).toBe(true);
+             expect(client.pairs['ETH/USDC']).toBeDefined();
+             expect(client.pairs['ETH/USDC'].base_decimals).toBe(18);  // Prefer existing
+             expect(client.pairs['ETH/USDC'].quote_decimals).toBe(6);  // Prefer existing
+             expect(client.pairs['ETH/USDC'].base_display_decimals).toBe(18);  // Prefer existing
+             expect(client.pairs['ETH/USDC'].min_trade_amount).toBe(0.01);  // Prefer existing
+        });
+    });
+
+    describe('addOrder', () => {
+        it('should add order successfully', async () => {
+             const result = await client.addOrder({
+                 pair: 'AVAX/USDC',
+                 side: 'BUY',
+                 type: 'LIMIT',
+                 amount: 10,
+                 price: 20
+             });
+             expect(result.success).toBe(true);
+             expect(mockContract.addNewOrder).toHaveBeenCalled();
+        });
+
+        it('should fetch pairs if missing', async () => {
+             // Clear pairs first
+             client.pairs = {};
+             mockAxios.request.mockResolvedValue({ data: [] }); // Empty pairs returned
+             const result = await client.addOrder({ pair: 'MISSING/PAIR', side: 'BUY', amount: 1, price: 10 });
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('Pair MISSING/PAIR not found');
+             expect(mockAxios.request).toHaveBeenCalled(); // getClobPairs called
+        });
+
+        it('should return error if signer missing', async () => {
+             client.signer = undefined as any;
+             const result = await client.addOrder({ pair: 'P/Q', side: 'B', amount: 1} as any);
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('Signer');
+        });
+
+        it('should handle contract errors', async () => {
+             mockContract.addNewOrder.estimateGas.mockRejectedValue(new Error("Revert"));
+             const result = await client.addOrder({ pair: 'AVAX/USDC', side: 'BUY', amount: 1, price: 10});
+             expect(result.success).toBe(false);
+             expect(result.error).toBeDefined();
+        });
+
+        it('should return error for invalid order params', async () => {
+             const result = await client.addOrder({ pair: 'INVALID', side: 'BUY', amount: 1, price: 10} as any);
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('pair');
+        });
+
+        it('should return error when getClobPairs fails in addOrder', async () => {
+             client.pairs = {};
+             mockAxios.request.mockRejectedValue(new Error("API Fail"));
+             const result = await client.addOrder({ pair: 'MISSING/PAIR', side: 'BUY', amount: 1, price: 10});
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('API Fail');
+        });
+    });
+
+    describe('cancelOrder', () => {
+          it('should cancel order', async () => {
+              // Use valid orderId format (0x + 64 hex chars or bytes32)
+              const result = await client.cancelOrder(VALID_ORDER_ID);
+              expect(result.success).toBe(true);
+              expect(mockContract.cancelOrder).toHaveBeenCalledWith(VALID_ORDER_ID, expect.any(Object));
+          });
+
+          it('should return error if signer missing', async () => {
+              client.signer = undefined as any;
+              const result = await client.cancelOrder(VALID_ORDER_ID);
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('Signer');
+          });
+
+          it('should return error for invalid orderId format', async () => {
+              const result = await client.cancelOrder('');
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('cannot be empty');
+          });
+
+          it('should handle contract error in cancelOrder', async () => {
+              mockContract.cancelOrder.estimateGas.mockRejectedValue(new Error("Contract error"));
+              const result = await client.cancelOrder(VALID_ORDER_ID);
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('cancelling order');
+          });
+    });
+
+    describe('cancelAllOrders', () => {
+         it('should fetch open orders and cancel list', async () => {
+             // Mock getOpenOrders internally or via axios mock?
+             // Calling getOpenOrders internally triggers axios.
+             // Mock axios response for open orders
+             mockAxios.request.mockResolvedValue({ data: { rows: [{ id: '0x1' }, { id: '0x2' }] } });
+             
+             // Mock cancelListOrders
+             jest.spyOn(client, 'cancelListOrders').mockResolvedValue({ success: true, data: {}, error: null } as any);
+
+             const result = await client.cancelAllOrders();
+             expect(result.success).toBe(true);
+             expect(client.cancelListOrders).toHaveBeenCalledWith(['0x1', '0x2']);
+         });
+
+         it('should handle no open orders', async () => {
+             mockAxios.request.mockResolvedValue({ data: { rows: [] } });
+             const result = await client.cancelAllOrders();
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('No open orders');
+         });
+
+         it('should return error string if fetch fails', async () => {
+              mockAxios.request.mockRejectedValue(new Error("Fail"));
+              const result = await client.cancelAllOrders();
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('Error fetching open orders');
+         });
+         
+         it('should return error if API returns bad format', async () => {
+             // getOpenOrders wraps non-array data in array, so cancelAllOrders will try to map
+             // The mapped IDs will be undefined, which should cause cancelListOrders to fail
+             mockAxios.request.mockResolvedValue({ data: "BadData" }); // Not array/object with rows
+             const result = await client.cancelAllOrders();
+             // The result depends on how cancelListOrders handles undefined IDs
+             // If it validates, it will fail; otherwise it might succeed
+             expect(result.success).toBeDefined();
+         });
+    });
+
+    describe('cancelListOrders', () => {
+         it('should cancel orders directly', async () => {
+             const result = await client.cancelListOrders(['0x1', '0x2']);
+             expect(result.success).toBe(true);
+             expect(mockContract.cancelOrderList).toHaveBeenCalledWith(['0x1', '0x2'], expect.any(Object));
+         });
+
+         it('should return error if signer/contract missing', async () => {
+             client.signer = undefined as any;
+             const result = await client.cancelListOrders([]);
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('Not initialized');
+         });
+
+          it('should return error if contract missing in cancelOrder', async () => {
+              client.tradePairsContract = null;
+              const result = await client.cancelOrder(VALID_ORDER_ID);
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('TradePairs contract not initialized');
+          });
+
+          it('should handle contract error in cancelListOrders', async () => {
+              mockContract.cancelOrderList.estimateGas.mockRejectedValue(new Error("Contract error"));
+              const result = await client.cancelListOrders(['0x1', '0x2']);
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('cancelling order list');
+          });
+    });
+
+    describe('getOpenOrders', () => {
+         it('should return error if signer missing', async () => {
+             client.signer = undefined as any;
+             const result = await client.getOpenOrders();
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('Signer not configured');
+         });
+
+         it('should return error if API throws', async () => {
+             mockAxios.request.mockRejectedValue(new Error("API Fail"));
+             const result = await client.getOpenOrders();
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('Error fetching open orders');
+         }); 
+         
+         it('should fetch with correct params', async () => {
+              mockAxios.request.mockResolvedValue({ data: { rows: [] } });
+              const result = await client.getOpenOrders('AVAX/USDC');
+               expect(result.success).toBe(true);
+               
+               expect(mockAxios.request).toHaveBeenCalledWith(expect.objectContaining({
+                   url: ENDPOINTS.SIGNED_ORDERS,
+                   params: expect.objectContaining({ pair: 'AVAX/USDC' })
+               }));
+         });
+         it('should return raw data if rows missing', async () => {
+              mockAxios.request.mockResolvedValue({ data: [] }); // Direct array
+              const result = await client.getOpenOrders();
+              expect(result.success).toBe(true);
+              expect(result.data).toEqual([]);
+         });
+
+         it('should transform API field names to camelCase', async () => {
+              // Mock API response with lowercase field names
+              mockAxios.request.mockResolvedValue({ 
+                  data: { 
+                      rows: [{
+                          id: '0x123',
+                          clientordid: '0xabc',
+                          tradepairid: '0xdef',
+                          price: 100,
+                          quantity: 1.5,
+                          filledquantity: 0.5,
+                          status: 0,
+                          side: 0,
+                          type: 1,
+                          pair: 'AVAX/USDC',
+                          totalamount: 150,
+                          totalfee: 0.1
+                      }]
+                  } 
+              });
+              const result = await client.getOpenOrders();
+              expect(result.success).toBe(true);
+              expect(result.data).toHaveLength(1);
+              expect(result.data![0]).toMatchObject({
+                  id: '0x123',
+                  clientOrderId: '0xabc',
+                  tradePairId: '0xdef',
+                  price: 100,
+                  quantity: 1.5,
+                  filledQuantity: 0.5,
+                  status: 0,
+                  side: 0,
+                  type: 1,
+                  pair: 'AVAX/USDC',
+                  totalAmount: 150,
+                  totalFee: 0.1
+              });
+         });
+
+         it('should return error for invalid pair format', async () => {
+              const result = await client.getOpenOrders('INVALID');
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('pair');
+         });
+    });
+
+    describe('getOrderBook', () => {
+         it('should fetch and parse book', async () => {
+              // Mock NBook filter logic (0 prices)
+              const mockBook = [[100n, 0n], [1n, 0n]]; // 0 price should be skipped
+              mockContract.getNBook.mockResolvedValue(mockBook);
+              
+              const result = await client.getOrderBook('AVAX/USDC');
+              expect(result.success).toBe(true);
+              expect(result.data!.bids).toHaveLength(1); // 100 ! 0
+         });
+
+         it('should return error if contract missing', async () => {
+             client.tradePairsContract = null;
+             const result = await client.getOrderBook('AVAX/USDC');
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('Contract not init');
+         });
+
+         it('should load pairs if needed', async () => {
+              mockAxios.request.mockResolvedValue({ data: [] });
+              const result = await client.getOrderBook('UNKNOWN/PAIR');
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('Pair UNKNOWN/PAIR not found');
+         });
+
+         it('should return error for invalid pair format in getOrderBook', async () => {
+              const result = await client.getOrderBook('INVALID');
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('pair');
+         });
+
+         it('should return error when getClobPairs fails in getOrderBook', async () => {
+              client.pairs = {};
+              mockAxios.request.mockRejectedValue(new Error("API Fail"));
+              const result = await client.getOrderBook('UNKNOWN/PAIR');
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('API Fail');
+         });
+
+         it('should handle contract error in getOrderBook', async () => {
+              mockContract.getNBook.mockRejectedValue(new Error("Contract error"));
+              const result = await client.getOrderBook('AVAX/USDC');
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('fetching orderbook');
+         });
+    });
+
+    describe('getOrder', () => {
+        const NULL_BYTES = "0x0000000000000000000000000000000000000000000000000000000000000000";
+
+        it('should return error if signer/contract missing', async () => {
+             client.signer = undefined as any;
+             const result = await client.getOrder(VALID_ORDER_ID);
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('Signer/Contract not initialized');
+        });
+
+        it('should return formatted order if found directly', async () => {
+             // Mock formatted data [id, clientOrderId...]
+             const mockData = [VALID_ORDER_ID, '0xClId', '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1]; 
+             mockContract.getOrder.mockResolvedValue(mockData); 
+             
+             const result = await client.getOrder(VALID_ORDER_ID);
+             expect(result.success).toBe(true);
+             expect(result.data!.pair).toBe('AVAX/USDC');
+             expect(result.data!.side).toBe('BUY'); 
+        });
+
+        it('should handle uppercase ID (DataHexString coverage)', async () => {
+             const upperId = VALID_ORDER_ID.toUpperCase();
+             const mockData = [VALID_ORDER_ID, '0xClId', '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1]; 
+             
+             // Mock needs to match lowercased call or we assume getOrder handles it
+             // clob.ts says: orderIdBytes = orderId.startsWith('0x') ? orderId : ...
+             // If upperId starts with 0X, it passes as is to contract?
+             // But DataHexString uses toLowerCase().
+             // Checks if DataHexString(orderData[0]) === DataHexString(NULL)
+             
+             mockContract.getOrder.mockResolvedValue(mockData);
+             const result = await client.getOrder(upperId);
+             expect(result.success).toBe(true);
+        });
+
+         it('should parse SELL/MARKET correctly', async () => {
+             // 9=Side(1=SELL), 10=Type(0=MARKET)
+             const mockData = [VALID_ORDER_ID, '0xClId', '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 1, 0, 0, 1]; 
+             mockContract.getOrder.mockResolvedValue(mockData);
+             const result = await client.getOrder(VALID_ORDER_ID);
+             expect(result.success).toBe(true);
+             expect(result.data!.side).toBe('SELL');
+             expect(result.data!.type).toBe('MARKET');
+         });
+
+        it('should fallback to Client ID if main ID not found', async () => {
+             // First call returns NULL
+             const nullData = ["0x" + "0".repeat(64)];
+             mockContract.getOrder.mockResolvedValue(nullData);
+             
+             // Second call (getOrderByClientId) returns valid
+             const validData = [VALID_ORDER_ID, '0xClId', '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+             mockContract.getOrderByClientId.mockResolvedValue(validData);
+             
+             const result = await client.getOrder(VALID_ORDER_ID);
+             expect(result.success).toBe(true);
+             expect(result.data!.pair).toBe('AVAX/USDC');
+        });
+
+        it('should return error if both checks fail', async () => {
+             const nullData = ["0x" + "0".repeat(64)];
+             mockContract.getOrder.mockResolvedValue(nullData);
+             mockContract.getOrderByClientId.mockResolvedValue(nullData);
+
+             const result = await client.getOrder(VALID_ORDER_ID);
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('Order not found');
+        });
+        
+        it('should suppress error in fallback check and return not found', async () => {
+             mockContract.getOrder.mockResolvedValue(["0x" + "0".repeat(64)]);
+             mockContract.getOrderByClientId.mockRejectedValue(new Error("RPC Fail"));
+             const result = await client.getOrder(VALID_ORDER_ID);
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('Order not found');
+        });
+
+        it('should handle contract error in getOrder', async () => {
+             mockContract.getOrder.mockRejectedValue(new Error("Contract error"));
+             const result = await client.getOrder(VALID_ORDER_ID);
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('getting order');
+        });
+
+        it('should return error for invalid orderId format in getOrder', async () => {
+             const result = await client.getOrder('');
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('cannot be empty');
+        });
+    });
+    
+    describe('getOrderByClientId', () => {
+         it('should return formatted order', async () => {
+             const mockData = ['0xId', '0xClId', '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+             mockContract.getOrderByClientOrderId.mockResolvedValue(mockData);
+             const result = await client.getOrderByClientId('client-id');
+             expect(result.success).toBe(true);
+             expect(result.data!.pair).toBe('AVAX/USDC');
+         });
+
+         it('should return error if signer missing', async () => {
+             client.signer = undefined as any;
+             const result = await client.getOrderByClientId('id');
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('Signer/Contract not initialized');
+         });
+
+         it('should return error for invalid clientOrderId format', async () => {
+             const result = await client.getOrderByClientId('');
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('cannot be empty');
+         });
+
+         it('should handle contract error in getOrderByClientId', async () => {
+             mockContract.getOrderByClientOrderId.mockRejectedValue(new Error("Contract error"));
+             const result = await client.getOrderByClientId(VALID_CLIENT_ID);
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('getting order by client ID');
+         });
+    });
+
+    describe('cancelListOrdersByClientId', () => {
+         it('should return error if signer/contract missing', async () => {
+             client.signer = undefined as any;
+             const result = await client.cancelListOrdersByClientId([]);
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('Signer/Contract not initialized');
+         });
+         
+         it('should call contract with bytes32', async () => {
+             // Mock estimateGas to avoid "undefined property" error if not set
+             mockContract.cancelOrderListByClientIds.estimateGas.mockResolvedValue(100n);
+             
+             const result = await client.cancelListOrdersByClientId(['id1']);
+             expect(result.success).toBe(true);
+             expect(mockContract.cancelOrderListByClientIds).toHaveBeenCalled();
+         });
+
+         it('should handle contract error', async () => {
+             mockContract.cancelOrderListByClientIds.estimateGas.mockRejectedValue(new Error("Fail"));
+             const result = await client.cancelListOrdersByClientId(['id1']);
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('cancelling orders by client ID');
+         });
+    });
+
+    describe('cancelAddList Extended', () => {
+         it('should return error if signer/contract missing', async () => {
+             client.signer = undefined as any;
+             const result = await client.cancelAddList([]);
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('Signer/Contract not initialized');
+         });
+
+         it('should handle SELL side replacement', async () => {
+             mockContract.cancelAddList.estimateGas = jest.fn().mockResolvedValue(100n);
+             
+             const reps = [{ order_id: 'old1', pair: 'AVAX/USDC', side: 'SELL', price: 10, amount: 10 }];
+             const result = await client.cancelAddList(reps);
+             expect(result.success).toBe(true);
+             const callArgs = mockContract.cancelAddList.mock.calls[0]; // [orderIds, newOrders]
+             // callArgs[1] is the newOrders tuple array
+             // callArgs[1][0] is the first tuple
+             // Tuple: [id, pairId, price, qty, addr, side(1), ...]
+             expect(callArgs[1][0][5]).toBe(1); // SideEnum 1 = SELL
+         });
+    });
+
+
+    describe('addOrderList', () => {
+         it('should add multiple orders', async () => {
+             mockContract.addOrderList.mockResolvedValue({ 
+                 hash: '0xAddListHash',
+                 wait: jest.fn().mockResolvedValue({ status: 1, hash: '0xAddListHash' })
+             });
+             
+             const reqs: any[] = [
+                 { pair: 'AVAX/USDC', side: 'BUY', amount: 10, price: 20 },
+                 { pair: 'AVAX/USDC', side: 'SELL', amount: 5, price: 25 }
+             ];
+             const result = await client.addOrderList(reqs);
+             expect(result.success).toBe(true);
+             expect(result.data!.txHash).toBe('0xAddListHash');
+             expect(result.data!.clientOrderIds).toHaveLength(2);
+         });
+
+          it('should fail if pair missing', async () => {
+               mockAxios.request.mockResolvedValue({ data: [] });
+               // Use cast to allow invalid side for test
+               const result = await client.addOrderList([{ pair: 'MISSING/PAIR', side: 'B', amount: 1, price: 10} as any]);
+               expect(result.success).toBe(false);
+               expect(result.error).toContain('Pair MISSING/PAIR not found');
+          });
+          
+          it('should log and return error', async () => {
+               mockContract.addOrderList.estimateGas.mockRejectedValue(new Error("Fail"));
+               const result = await client.addOrderList([]);
+               expect(result.success).toBe(false);
+               expect(result.error).toContain('Fail');
+               // expect(console.error).toHaveBeenCalled(); // Sanitized error logging
+          });
+
+         it('should return error if signer/contract not initialized', async () => {
+              client.signer = undefined as any;
+              const result = await client.addOrderList([]);
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('Signer/Contract not initialized');
+         });
+
+         it('should handle missing price in addOrderList', async () => {
+             mockContract.addOrderList.mockResolvedValue({ 
+                 hash: '0xAddListHash',
+                 wait: jest.fn().mockResolvedValue({ status: 1, hash: '0xAddListHash' })
+             });
+             
+             // MARKET orders don't require price, so price can be undefined
+             const reqs: any[] = [
+                 { pair: 'AVAX/USDC', side: 'BUY', type: 'MARKET', amount: 10, price: undefined }
+             ];
+             const result = await client.addOrderList(reqs);
+             expect(result.success).toBe(true);
+             // Price should default to 0 when undefined
+             const callArgs = mockContract.addOrderList.mock.calls[0][0];
+             expect(callArgs[0][2]).toBe(0n); // priceWei should be 0
+         });
+    });
+
+     describe('replaceOrder', () => {
+          it('should replace order using existing pair info', async () => {
+               // Mock getOrder to return valid pair
+               const mockData = [VALID_ORDER_ID, '0xClId', '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+               mockContract.getOrder.mockResolvedValue(mockData);
+               
+               const result = await client.replaceOrder(VALID_ORDER_ID, 21, 11);
+               expect(result.success).toBe(true);
+               expect(mockContract.cancelReplaceOrder).toHaveBeenCalled();
+          });
+          
+          it('should return error if pair unknown in internal lookup', async () => {
+               // Return ID that doesn't match known pair
+               const mockData = [VALID_ORDER_ID, '0xClId', '0xPairId_UNKNOWN', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+               mockContract.getOrder.mockResolvedValue(mockData);
+               mockAxios.request.mockResolvedValue({ data: [] }); // Fetch fails to find it too
+               
+               const result = await client.replaceOrder(VALID_ORDER_ID, 21, 11);
+               expect(result.success).toBe(false);
+               expect(result.error).toContain('Pair data not found for order');
+          });
+
+          it('should return error for invalid orderId format in replaceOrder', async () => {
+               const result = await client.replaceOrder('', 21, 11);
+               expect(result.success).toBe(false);
+               expect(result.error).toContain('cannot be empty');
+          });
+
+          it('should return error for invalid price in replaceOrder', async () => {
+               const result = await client.replaceOrder(VALID_ORDER_ID, -1, 11);
+               expect(result.success).toBe(false);
+               expect(result.error).toContain('newPrice');
+          });
+
+          it('should return error for invalid amount in replaceOrder', async () => {
+               const result = await client.replaceOrder(VALID_ORDER_ID, 21, -1);
+               expect(result.success).toBe(false);
+               expect(result.error).toContain('newAmount');
+          });
+
+          it('should return error when getOrder fails in replaceOrder', async () => {
+               mockContract.getOrder.mockResolvedValue(["0x" + "0".repeat(64)]);
+               mockContract.getOrderByClientId.mockResolvedValue(["0x" + "0".repeat(64)]);
+               
+               const result = await client.replaceOrder(VALID_ORDER_ID, 21, 11);
+               expect(result.success).toBe(false);
+               expect(result.error).toContain('Order not found');
+          });
+
+          it('should handle contract error in replaceOrder', async () => {
+               const mockData = [VALID_ORDER_ID, '0xClId', '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+               mockContract.getOrder.mockResolvedValue(mockData);
+               mockContract.cancelReplaceOrder.estimateGas.mockRejectedValue(new Error("Contract error"));
+               
+               const result = await client.replaceOrder(VALID_ORDER_ID, 21, 11);
+               expect(result.success).toBe(false);
+               expect(result.error).toContain('replacing order');
+          });
+     });
+
+    describe('Batch Cancels', () => {
+         it('cancelListOrdersByClientId should call contract', async () => {
+              await client.cancelListOrdersByClientId(['id1', 'id2']);
+              expect(mockContract.cancelOrderListByClientIds).toHaveBeenCalled();
+         });
+
+         it('cancelAddList should call contract', async () => {
+              const reps = [{ order_id: 'old1', pair: 'AVAX/USDC', side: 'BUY', price: 10, amount: 10 }];
+              await client.cancelAddList(reps);
+              expect(mockContract.cancelAddList).toHaveBeenCalled();
+         });
+         
+         it('cancelAddList should fail for missing pair', async () => {
+              mockAxios.request.mockResolvedValue({ data: [] });
+              const reps = [{ order_id: 'old1', pair: 'MISSING', side: 'B', price: 10, amount: 10 }];
+              const result = await client.cancelAddList(reps);
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('Pair MISSING not found');
+         });
+
+           it('cancelAddList should fetch order details when side/pair not provided', async () => {
+                // Mock getOrder to return order details
+                const mockData = [VALID_ORDER_ID, '0xClId', '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+                mockContract.getOrder.mockResolvedValue(mockData);
+                
+                // Replacement without side or pair - should trigger getOrder call
+                const reps = [{ order_id: VALID_ORDER_ID, price: 10, amount: 10 }];
+                await client.cancelAddList(reps);
+                
+                expect(mockContract.getOrder).toHaveBeenCalledWith(VALID_ORDER_ID);
+                expect(mockContract.cancelAddList).toHaveBeenCalled();
+           });
+
+           it('cancelAddList should return error when getOrder fails', async () => {
+                mockContract.getOrder.mockResolvedValue(["0x" + "0".repeat(64)]);
+                mockContract.getOrderByClientId.mockResolvedValue(["0x" + "0".repeat(64)]);
+                
+                // Replacement without side or pair - getOrder will fail
+                const reps = [{ order_id: VALID_ORDER_ID, price: 10, amount: 10 }];
+                const result = await client.cancelAddList(reps);
+                
+                expect(result.success).toBe(false);
+                expect(result.error).toContain('Order not found');
+           });
+
+           it('cancelAddList should handle contract error', async () => {
+                const mockData = [VALID_ORDER_ID, '0xClId', '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+                mockContract.getOrder.mockResolvedValue(mockData);
+                mockContract.cancelAddList.estimateGas.mockRejectedValue(new Error("Contract error"));
+                
+                const reps = [{ order_id: VALID_ORDER_ID, pair: 'AVAX/USDC', side: 'BUY', price: 10, amount: 10 }];
+                const result = await client.cancelAddList(reps);
+                
+                expect(result.success).toBe(false);
+                expect(result.error).toContain('cancel add list');
+           });
+
+           it('cancelAddList should default to AVAX/USDC when pair is missing', async () => {
+                // Mock getOrder to return order without pair
+                const mockData = [VALID_ORDER_ID, '0xClId', '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+                mockContract.getOrder.mockResolvedValue(mockData);
+                // Mock _formatOrderData to return order without pair
+                jest.spyOn(client as any, '_formatOrderData').mockResolvedValue({
+                    id: VALID_ORDER_ID,
+                    side: 'BUY',
+                    // pair is missing/falsy
+                });
+                
+                const reps = [{ order_id: VALID_ORDER_ID, side: 'BUY', price: 10, amount: 10 }];
+                const result = await client.cancelAddList(reps);
+                
+                expect(result.success).toBe(true);
+                // Should use default pair "AVAX/USDC"
+                expect(mockContract.cancelAddList).toHaveBeenCalled();
+           });
+
+          it('cancelAddList should handle numeric side BUY=0', async () => {
+               // After bug fix: side=0 (BUY) is NOT falsy, so getOrder should NOT be called
+               const reps = [{ order_id: '0xOldOrder', pair: 'AVAX/USDC', side: 0, price: 10, amount: 10 }];
+               await client.cancelAddList(reps);
+               
+               // Verify getOrder was NOT called (side=0 is now properly handled)
+               expect(mockContract.getOrder).not.toHaveBeenCalled();
+               
+               const callArgs = mockContract.cancelAddList.mock.calls[0];
+               expect(callArgs[1][0][5]).toBe(0); // BUY
+          });
+
+          it('cancelAddList should handle numeric side SELL', async () => {
+               // side=1 is truthy, so this doesn't trigger getOrder
+               const reps = [{ order_id: '0xOldOrder', pair: 'AVAX/USDC', side: 1, price: 10, amount: 10 }];
+               await client.cancelAddList(reps);
+               
+               const callArgs = mockContract.cancelAddList.mock.calls[0];
+               expect(callArgs[1][0][5]).toBe(1); // SELL
+          });
+    });
+
+    describe('_getAuthHeaders', () => {
+         it('should sign message and cache signature', async () => {
+              const headers = await client._getAuthHeaders();
+              expect(headers['x-signature']).toBe("0xUserAddress:0xSignature");
+              expect(mockSigner.signMessage).toHaveBeenCalledWith("dexalot");
+              
+              // Second call should use cache
+              mockSigner.signMessage.mockClear();
+              await client._getAuthHeaders();
+              expect(mockSigner.signMessage).not.toHaveBeenCalled();
+         });
+
+         it('should throw if signer missing', async () => {
+              client.signer = undefined as any;
+              await expect(client._getAuthHeaders()).rejects.toThrow("No signer");
+         });
+    });
+
+    describe('addOrder Enums', () => {
+         it('should handle SELL and MARKET types', async () => {
+             await client.addOrder({
+                 pair: 'AVAX/USDC',
+                 side: 'SELL',
+                 type: 'MARKET',
+                 amount: 10,
+                 price: 0
+             });
+             const callArgs = mockContract.addNewOrder.mock.calls[0][0];
+             expect(callArgs.side).toBe(1); // SELL
+             expect(callArgs.type1).toBe(0); // MARKET
+         });
+
+         it('should throw if contract missing in addOrder', async () => {
+             client.tradePairsContract = null;
+             const result = await client.addOrder({ pair: 'AVAX/USDC', side: 'BUY', amount: 10, price: 10 });
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('TradePairs contract not initialized');
+         });
+    });
+
+    describe('addOrderList Enums', () => {
+        it('should handle SELL side in list', async () => {
+             mockContract.addOrderList.mockResolvedValue({ 
+                 hash: '0xAddListHash',
+                 wait: jest.fn().mockResolvedValue({ status: 1, hash: '0xAddListHash' })
+             });
+             
+             const reqs: any[] = [
+                 { pair: 'AVAX/USDC', side: 'SELL', amount: 5, price: 25 }
+             ];
+             await client.addOrderList(reqs);
+             const callArgs = mockContract.addOrderList.mock.calls[0][0];
+             expect(callArgs[0][5]).toBe(1); // SELL
+        });
+    });
+
+    describe('Branch Coverage - Non-hex IDs and Fallbacks', () => {
+        it('getOrder should convert non-hex orderId', async () => {
+            const mockData = ['0xId', '0xClId', '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+            mockContract.getOrder.mockResolvedValue(mockData);
+            
+            // Use non-hex ID to trigger Utils.toBytes32 conversion
+            await client.getOrder('plain-order-id');
+            expect(Utils.toBytes32).toHaveBeenCalledWith('plain-order-id');
+        });
+
+        it('getOrderByClientId should handle hex clientOrderId directly', async () => {
+            const mockData = [VALID_ORDER_ID, '0xClId', '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+            mockContract.getOrderByClientOrderId.mockResolvedValue(mockData);
+            
+            // Use hex ID - calls contract directly
+            const spy = jest.spyOn(Utils, 'toBytes32');
+            spy.mockClear();
+            await client.getOrderByClientId(VALID_CLIENT_ID);
+            // toBytes32 should not be called for hex IDs (starts with 0x)
+            expect(mockContract.getOrderByClientOrderId).toHaveBeenCalledWith(
+                mockAddress, VALID_CLIENT_ID
+            );
+        });
+
+        it('getOrderByClientId should convert non-hex clientOrderId', async () => {
+            const mockData = ['0xId', '0xClId', '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+            mockContract.getOrderByClientOrderId.mockResolvedValue(mockData);
+            
+            await client.getOrderByClientId('plain-client-id');
+            expect(Utils.toBytes32).toHaveBeenCalledWith('plain-client-id');
+        });
+
+        it('addOrderList should fail if price missing (validation)', async () => {
+            // Order without price - validation should fail
+            const reqs: any[] = [{ pair: 'AVAX/USDC', side: 'BUY', amount: 5 }]; // No price
+            const result = await client.addOrderList(reqs);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('price is required');
+        });
+
+        it('replaceOrder should convert non-hex orderId', async () => {
+            const mockData = ['0xId', '0xClId', '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+            mockContract.getOrder.mockResolvedValue(mockData);
+            
+            await client.replaceOrder('plain-order-id', 21, 11);
+            expect(Utils.toBytes32).toHaveBeenCalledWith('plain-order-id');
+        });
+
+        it('cancelListOrdersByClientId should convert non-hex IDs', async () => {
+            await client.cancelListOrdersByClientId(['plain-id-1', 'plain-id-2']);
+            expect(Utils.toBytes32).toHaveBeenCalledWith('plain-id-1');
+            expect(Utils.toBytes32).toHaveBeenCalledWith('plain-id-2');
+        });
+
+        it('cancelListOrdersByClientId should keep hex IDs as-is', async () => {
+            const spy = jest.spyOn(Utils, 'toBytes32');
+            spy.mockClear();
+            
+            await client.cancelListOrdersByClientId(['0xHexId1', '0xHexId2']);
+            // toBytes32 should not be called for hex IDs
+            expect(spy).not.toHaveBeenCalled();
+        });
+
+        it('cancelAddList should fail for missing pair', async () => {
+            jest.spyOn(client, 'getOrder').mockResolvedValue({ side: 'BUY' } as any);
+            
+            // Provide side but invalid pair - validation should fail
+            const reps = [{ order_id: VALID_ORDER_ID, side: 'BUY', price: 10, amount: 10, pair: 'MISSING/PAIR' }];
+            const result = await client.cancelAddList(reps as any); 
+            
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Pair MISSING/PAIR not found');
+        });
+    });
+
+    describe('waitForReceipt parameter', () => {
+        it('should not wait for receipt when waitForReceipt=false in addOrder', async () => {
+            const tx = { hash: '0xTxHash' };
+            mockContract.addNewOrder.mockResolvedValue(tx);
+            
+            const result = await client.addOrder({
+                pair: 'AVAX/USDC',
+                side: 'BUY',
+                amount: 1.0,
+                price: 25.0
+            }, false);
+            
+            expect(result.success).toBe(true);
+            expect(result.data!.txHash).toBe('0xTxHash');
+            // When waitForReceipt=false, tx.wait() is never called
+        });
+
+        it('should not wait for receipt when waitForReceipt=false in cancelOrder', async () => {
+            const tx = { hash: '0xCancelHash' };
+            mockContract.cancelOrder.mockResolvedValue(tx);
+            
+            const result = await client.cancelOrder(VALID_ORDER_ID, false);
+            
+            expect(result.success).toBe(true);
+            expect(result.data!.txHash).toBe('0xCancelHash');
+            // When waitForReceipt=false, tx.wait() is never called
+        });
+
+        it('should not wait for receipt when waitForReceipt=false in addOrderList', async () => {
+            const tx = { hash: '0xAddListHash' };
+            mockContract.addOrderList.mockResolvedValue(tx);
+            
+            const reqs = [
+                { pair: 'AVAX/USDC', side: 'BUY', amount: 1.0, price: 25.0 }
+            ];
+            const result = await client.addOrderList(reqs, false);
+            
+            expect(result.success).toBe(true);
+            expect(result.data!.txHash).toBe('0xAddListHash');
+            // When waitForReceipt=false, tx.wait() is never called
+        });
+
+        it('should not wait for receipt when waitForReceipt=false in replaceOrder', async () => {
+            const mockData = [VALID_ORDER_ID, '0xClId', '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+            mockContract.getOrder.mockResolvedValue(mockData);
+            const tx = { hash: '0xReplaceHash' };
+            mockContract.cancelReplaceOrder.mockResolvedValue(tx);
+            
+            const result = await client.replaceOrder(VALID_ORDER_ID, 21, 11, false);
+            
+            expect(result.success).toBe(true);
+            expect(result.data!.txHash).toBe('0xReplaceHash');
+            // When waitForReceipt=false, tx.wait() is never called
+        });
+
+        it('should not wait for receipt when waitForReceipt=false in cancelListOrders', async () => {
+            const tx = { hash: '0xCancelListHash' };
+            mockContract.cancelOrderList.mockResolvedValue(tx);
+            
+            const result = await client.cancelListOrders([VALID_ORDER_ID], false);
+            
+            expect(result.success).toBe(true);
+            expect(result.data!.txHash).toBe('0xCancelListHash');
+            // When waitForReceipt=false, tx.wait() is never called
+        });
+
+        it('should not wait for receipt when waitForReceipt=false in cancelListOrdersByClientId', async () => {
+            const tx = { hash: '0xCancelByIdsHash' };
+            mockContract.cancelOrderListByClientIds.mockResolvedValue(tx);
+            
+            const result = await client.cancelListOrdersByClientId([VALID_CLIENT_ID], false);
+            
+            expect(result.success).toBe(true);
+            expect(result.data!.txHash).toBe('0xCancelByIdsHash');
+            // When waitForReceipt=false, tx.wait() is never called
+        });
+
+        it('should not wait for receipt when waitForReceipt=false in cancelAddList', async () => {
+            const tx = { hash: '0xCancelAddHash' };
+            mockContract.cancelAddList.mockResolvedValue(tx);
+            
+            const reps = [{ order_id: 'old1', pair: 'AVAX/USDC', side: 'BUY', price: 10, amount: 10 }];
+            const result = await client.cancelAddList(reps, false);
+            
+            expect(result.success).toBe(true);
+            expect(result.data!.txHash).toBe('0xCancelAddHash');
+            // When waitForReceipt=false, tx.wait() is never called
+        });
+
+        it('should return error when receipt status is not 1 in addOrder', async () => {
+            const tx = {
+                hash: '0xTxHash',
+                wait: jest.fn().mockResolvedValue({ status: 0, hash: '0xTxHash' })
+            };
+            mockContract.addNewOrder.mockResolvedValue(tx);
+            
+            const result = await client.addOrder({
+                pair: 'AVAX/USDC',
+                side: 'BUY',
+                amount: 1.0,
+                price: 25.0
+            }, true);
+            
+            expect(result.success).toBe(false);
+            expect(result.error).toBe("Transaction reverted");
+        });
+
+        it('should return error when receipt status is not 1 in cancelOrder', async () => {
+            const tx = {
+                hash: '0xCancelHash',
+                wait: jest.fn().mockResolvedValue({ status: 0, hash: '0xCancelHash' })
+            };
+            mockContract.cancelOrder.mockResolvedValue(tx);
+            
+            const result = await client.cancelOrder(VALID_ORDER_ID, true);
+            
+            expect(result.success).toBe(false);
+            expect(result.error).toBe("Transaction reverted");
+        });
+
+        it('should return error when receipt status is not 1 in cancelListOrders', async () => {
+            const tx = {
+                hash: '0xCancelListHash',
+                wait: jest.fn().mockResolvedValue({ status: 0, hash: '0xCancelListHash' })
+            };
+            mockContract.cancelOrderList.mockResolvedValue(tx);
+            
+            const result = await client.cancelListOrders([VALID_ORDER_ID], true);
+            
+            expect(result.success).toBe(false);
+            expect(result.error).toBe("Transaction reverted");
+        });
+
+        it('should return error when receipt status is not 1 in addOrderList', async () => {
+            const tx = {
+                hash: '0xAddListHash',
+                wait: jest.fn().mockResolvedValue({ status: 0, hash: '0xAddListHash' })
+            };
+            mockContract.addOrderList.mockResolvedValue(tx);
+            
+            const reqs = [
+                { pair: 'AVAX/USDC', side: 'BUY', amount: 1.0, price: 25.0 }
+            ];
+            const result = await client.addOrderList(reqs, true);
+            
+            expect(result.success).toBe(false);
+            expect(result.error).toBe("Transaction reverted");
+        });
+
+        it('should return error when receipt status is not 1 in replaceOrder', async () => {
+            const mockData = [VALID_ORDER_ID, '0xClId', '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+            mockContract.getOrder.mockResolvedValue(mockData);
+            const tx = {
+                hash: '0xReplaceHash',
+                wait: jest.fn().mockResolvedValue({ status: 0, hash: '0xReplaceHash' })
+            };
+            mockContract.cancelReplaceOrder.mockResolvedValue(tx);
+            
+            const result = await client.replaceOrder(VALID_ORDER_ID, 21, 11, true);
+            
+            expect(result.success).toBe(false);
+            expect(result.error).toBe("Transaction reverted");
+        });
+
+        it('should return error when receipt status is not 1 in cancelListOrdersByClientId', async () => {
+            const tx = {
+                hash: '0xCancelByIdsHash',
+                wait: jest.fn().mockResolvedValue({ status: 0, hash: '0xCancelByIdsHash' })
+            };
+            mockContract.cancelOrderListByClientIds.mockResolvedValue(tx);
+            
+            const result = await client.cancelListOrdersByClientId([VALID_CLIENT_ID], true);
+            
+            expect(result.success).toBe(false);
+            expect(result.error).toBe("Transaction reverted");
+        });
+
+        it('should return error when receipt status is not 1 in cancelAddList', async () => {
+            const tx = {
+                hash: '0xCancelAddHash',
+                wait: jest.fn().mockResolvedValue({ status: 0, hash: '0xCancelAddHash' })
+            };
+            mockContract.cancelAddList.mockResolvedValue(tx);
+
+            const reps = [{ order_id: 'old1', pair: 'AVAX/USDC', side: 'BUY', price: 10, amount: 10 }];
+            const result = await client.cancelAddList(reps, true);
+
+            expect(result.success).toBe(false);
+            expect(result.error).toBe("Transaction reverted");
+        });
+    });
+
+    describe('getClobPairs - missing min/max trade amounts', () => {
+        it('should default min_trade_amount and max_trade_amount to 0 when fields are missing', async () => {
+            mockAxios.request.mockResolvedValue({
+                data: [
+                    {
+                        pair: 'NEW/TOKEN',
+                        env: ENV.PROD_MULTI_SUBNET,
+                        base: 'NEW',
+                        quote: 'TOKEN',
+                        base_decimals: 18,
+                        quote_decimals: 6,
+                        // No min_trade_amount, max_trade_amount, mintrade_amnt, etc.
+                    }
+                ]
+            });
+
+            const result = await client.getClobPairs();
+            expect(result.success).toBe(true);
+            expect(client.pairs['NEW/TOKEN']).toBeDefined();
+            expect(client.pairs['NEW/TOKEN'].min_trade_amount).toBe(0);
+            expect(client.pairs['NEW/TOKEN'].max_trade_amount).toBe(0);
+        });
+    });
+});

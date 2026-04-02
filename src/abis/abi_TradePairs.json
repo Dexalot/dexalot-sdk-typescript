@@ -1,0 +1,2010 @@
+[
+  {
+    "parentenv": "production-multi",
+    "env": "production-multi-subnet",
+    "env_type": "subnet",
+    "contract_name": "TradePairs",
+    "contract_type": "TradePairs",
+    "address": "0x09383137C1eEe3E1A8bc781228E4199f6b4A9bbf",
+    "impl_address": "0x7220e669d80a972726471b0ee5484a6f1D718AE7",
+    "version": "3.6.1",
+    "blocknumber": "38528036",
+    "owner": "0xbFD53904e0A0c02eFB7e76aad7FfB1F476320038",
+    "status": "deployed",
+    "action": null,
+    "abi": {
+      "abi": [
+        {
+          "name": "Executed",
+          "type": "event",
+          "inputs": [
+            {
+              "name": "version",
+              "type": "uint8",
+              "indexed": false,
+              "internalType": "uint8"
+            },
+            {
+              "name": "pair",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "price",
+              "type": "uint256",
+              "indexed": false,
+              "internalType": "uint256"
+            },
+            {
+              "name": "quantity",
+              "type": "uint256",
+              "indexed": false,
+              "internalType": "uint256"
+            },
+            {
+              "name": "makerOrder",
+              "type": "bytes32",
+              "indexed": false,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "takerOrder",
+              "type": "bytes32",
+              "indexed": false,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "feeMaker",
+              "type": "uint256",
+              "indexed": false,
+              "internalType": "uint256"
+            },
+            {
+              "name": "feeTaker",
+              "type": "uint256",
+              "indexed": false,
+              "internalType": "uint256"
+            },
+            {
+              "name": "takerSide",
+              "type": "uint8",
+              "indexed": false,
+              "internalType": "enum ITradePairs.Side"
+            },
+            {
+              "name": "execId",
+              "type": "uint256",
+              "indexed": false,
+              "internalType": "uint256"
+            },
+            {
+              "name": "addressMaker",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "addressTaker",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "name": "Initialized",
+          "type": "event",
+          "inputs": [
+            {
+              "name": "version",
+              "type": "uint8",
+              "indexed": false,
+              "internalType": "uint8"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "name": "NewTradePair",
+          "type": "event",
+          "inputs": [
+            {
+              "name": "version",
+              "type": "uint8",
+              "indexed": false,
+              "internalType": "uint8"
+            },
+            {
+              "name": "pair",
+              "type": "bytes32",
+              "indexed": false,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "basedisplaydecimals",
+              "type": "uint8",
+              "indexed": false,
+              "internalType": "uint8"
+            },
+            {
+              "name": "quotedisplaydecimals",
+              "type": "uint8",
+              "indexed": false,
+              "internalType": "uint8"
+            },
+            {
+              "name": "mintradeamount",
+              "type": "uint256",
+              "indexed": false,
+              "internalType": "uint256"
+            },
+            {
+              "name": "maxtradeamount",
+              "type": "uint256",
+              "indexed": false,
+              "internalType": "uint256"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "name": "OrderStatusChanged",
+          "type": "event",
+          "inputs": [
+            {
+              "name": "version",
+              "type": "uint8",
+              "indexed": false,
+              "internalType": "uint8"
+            },
+            {
+              "name": "traderaddress",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "pair",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "order",
+              "type": "tuple",
+              "indexed": false,
+              "components": [
+                {
+                  "name": "id",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "clientOrderId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "tradePairId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "price",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "totalAmount",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "quantity",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "quantityFilled",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "totalFee",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "traderaddress",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "side",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Side"
+                },
+                {
+                  "name": "type1",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Type1"
+                },
+                {
+                  "name": "type2",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Type2"
+                },
+                {
+                  "name": "status",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Status"
+                },
+                {
+                  "name": "updateBlock",
+                  "type": "uint32",
+                  "internalType": "uint32"
+                },
+                {
+                  "name": "createBlock",
+                  "type": "uint32",
+                  "internalType": "uint32"
+                }
+              ],
+              "internalType": "struct ITradePairs.Order"
+            },
+            {
+              "name": "previousUpdateBlock",
+              "type": "uint32",
+              "indexed": false,
+              "internalType": "uint32"
+            },
+            {
+              "name": "code",
+              "type": "bytes32",
+              "indexed": false,
+              "internalType": "bytes32"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "name": "ParameterUpdated",
+          "type": "event",
+          "inputs": [
+            {
+              "name": "version",
+              "type": "uint8",
+              "indexed": false,
+              "internalType": "uint8"
+            },
+            {
+              "name": "pair",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "param",
+              "type": "string",
+              "indexed": false,
+              "internalType": "string"
+            },
+            {
+              "name": "oldValue",
+              "type": "uint256",
+              "indexed": false,
+              "internalType": "uint256"
+            },
+            {
+              "name": "newValue",
+              "type": "uint256",
+              "indexed": false,
+              "internalType": "uint256"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "name": "Paused",
+          "type": "event",
+          "inputs": [
+            {
+              "name": "account",
+              "type": "address",
+              "indexed": false,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "name": "RoleAdminChanged",
+          "type": "event",
+          "inputs": [
+            {
+              "name": "role",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "previousAdminRole",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "newAdminRole",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "name": "RoleGranted",
+          "type": "event",
+          "inputs": [
+            {
+              "name": "role",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "account",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "sender",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "name": "RoleRevoked",
+          "type": "event",
+          "inputs": [
+            {
+              "name": "role",
+              "type": "bytes32",
+              "indexed": true,
+              "internalType": "bytes32"
+            },
+            {
+              "name": "account",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            },
+            {
+              "name": "sender",
+              "type": "address",
+              "indexed": true,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "name": "Unpaused",
+          "type": "event",
+          "inputs": [
+            {
+              "name": "account",
+              "type": "address",
+              "indexed": false,
+              "internalType": "address"
+            }
+          ],
+          "anonymous": false
+        },
+        {
+          "type": "fallback",
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "DEFAULT_ADMIN_ROLE",
+          "type": "function",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "name": "EXCHANGE_ROLE",
+          "type": "function",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "name": "VERSION",
+          "type": "function",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "name": "addNewOrder",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_order",
+              "type": "tuple",
+              "components": [
+                {
+                  "name": "clientOrderId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "tradePairId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "price",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "quantity",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "traderaddress",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "side",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Side"
+                },
+                {
+                  "name": "type1",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Type1"
+                },
+                {
+                  "name": "type2",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Type2"
+                },
+                {
+                  "name": "stp",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.STP"
+                }
+              ],
+              "internalType": "struct ITradePairs.NewOrder"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "addOrderList",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_orders",
+              "type": "tuple[]",
+              "components": [
+                {
+                  "name": "clientOrderId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "tradePairId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "price",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "quantity",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "traderaddress",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "side",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Side"
+                },
+                {
+                  "name": "type1",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Type1"
+                },
+                {
+                  "name": "type2",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Type2"
+                },
+                {
+                  "name": "stp",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.STP"
+                }
+              ],
+              "internalType": "struct ITradePairs.NewOrder[]"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "addOrderType",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "_type",
+              "type": "uint8",
+              "internalType": "enum ITradePairs.Type1"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "addTradePair",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "_baseTokenDetails",
+              "type": "tuple",
+              "components": [
+                {
+                  "name": "decimals",
+                  "type": "uint8",
+                  "internalType": "uint8"
+                },
+                {
+                  "name": "tokenAddress",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "auctionMode",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.AuctionMode"
+                },
+                {
+                  "name": "srcChainId",
+                  "type": "uint32",
+                  "internalType": "uint32"
+                },
+                {
+                  "name": "l1Decimals",
+                  "type": "uint8",
+                  "internalType": "uint8"
+                },
+                {
+                  "name": "symbol",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "symbolId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "sourceChainSymbol",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "isVirtual",
+                  "type": "bool",
+                  "internalType": "bool"
+                }
+              ],
+              "internalType": "struct IPortfolio.TokenDetails"
+            },
+            {
+              "name": "_baseDisplayDecimals",
+              "type": "uint8",
+              "internalType": "uint8"
+            },
+            {
+              "name": "_quoteTokenDetails",
+              "type": "tuple",
+              "components": [
+                {
+                  "name": "decimals",
+                  "type": "uint8",
+                  "internalType": "uint8"
+                },
+                {
+                  "name": "tokenAddress",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "auctionMode",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.AuctionMode"
+                },
+                {
+                  "name": "srcChainId",
+                  "type": "uint32",
+                  "internalType": "uint32"
+                },
+                {
+                  "name": "l1Decimals",
+                  "type": "uint8",
+                  "internalType": "uint8"
+                },
+                {
+                  "name": "symbol",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "symbolId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "sourceChainSymbol",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "isVirtual",
+                  "type": "bool",
+                  "internalType": "bool"
+                }
+              ],
+              "internalType": "struct IPortfolio.TokenDetails"
+            },
+            {
+              "name": "_quoteDisplayDecimals",
+              "type": "uint8",
+              "internalType": "uint8"
+            },
+            {
+              "name": "_minTradeAmount",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "_maxTradeAmount",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "_mode",
+              "type": "uint8",
+              "internalType": "enum ITradePairs.AuctionMode"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "cancelAddList",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_orderIdsToCancel",
+              "type": "bytes32[]",
+              "internalType": "bytes32[]"
+            },
+            {
+              "name": "_orders",
+              "type": "tuple[]",
+              "components": [
+                {
+                  "name": "clientOrderId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "tradePairId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "price",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "quantity",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "traderaddress",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "side",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Side"
+                },
+                {
+                  "name": "type1",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Type1"
+                },
+                {
+                  "name": "type2",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Type2"
+                },
+                {
+                  "name": "stp",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.STP"
+                }
+              ],
+              "internalType": "struct ITradePairs.NewOrder[]"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "cancelAddListByClientIds",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_clientIdsToCancel",
+              "type": "bytes32[]",
+              "internalType": "bytes32[]"
+            },
+            {
+              "name": "_orders",
+              "type": "tuple[]",
+              "components": [
+                {
+                  "name": "clientOrderId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "tradePairId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "price",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "quantity",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "traderaddress",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "side",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Side"
+                },
+                {
+                  "name": "type1",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Type1"
+                },
+                {
+                  "name": "type2",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Type2"
+                },
+                {
+                  "name": "stp",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.STP"
+                }
+              ],
+              "internalType": "struct ITradePairs.NewOrder[]"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "cancelOrder",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_orderId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "cancelOrderByClientId",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_clientOrderId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "cancelOrderList",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_orderIds",
+              "type": "bytes32[]",
+              "internalType": "bytes32[]"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "cancelOrderListByClientIds",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_clientOrderIds",
+              "type": "bytes32[]",
+              "internalType": "bytes32[]"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "cancelReplaceOrder",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_orderId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "_clientOrderId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "_price",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "_quantity",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "getAllowedOrderTypes",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint256[]",
+              "internalType": "uint256[]"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "name": "getBookId",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "_side",
+              "type": "uint8",
+              "internalType": "enum ITradePairs.Side"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "name": "getNBook",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "_side",
+              "type": "uint8",
+              "internalType": "enum ITradePairs.Side"
+            },
+            {
+              "name": "_nPrice",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "_nOrder",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "_lastPrice",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "_lastOrder",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint256[]",
+              "internalType": "uint256[]"
+            },
+            {
+              "name": "",
+              "type": "uint256[]",
+              "internalType": "uint256[]"
+            },
+            {
+              "name": "",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "name": "getOrder",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_orderId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "tuple",
+              "components": [
+                {
+                  "name": "id",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "clientOrderId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "tradePairId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "price",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "totalAmount",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "quantity",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "quantityFilled",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "totalFee",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "traderaddress",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "side",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Side"
+                },
+                {
+                  "name": "type1",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Type1"
+                },
+                {
+                  "name": "type2",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Type2"
+                },
+                {
+                  "name": "status",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Status"
+                },
+                {
+                  "name": "updateBlock",
+                  "type": "uint32",
+                  "internalType": "uint32"
+                },
+                {
+                  "name": "createBlock",
+                  "type": "uint32",
+                  "internalType": "uint32"
+                }
+              ],
+              "internalType": "struct ITradePairs.Order"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "name": "getOrderByClientOrderId",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_trader",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "_clientOrderId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "tuple",
+              "components": [
+                {
+                  "name": "id",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "clientOrderId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "tradePairId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "price",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "totalAmount",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "quantity",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "quantityFilled",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "totalFee",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "traderaddress",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "side",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Side"
+                },
+                {
+                  "name": "type1",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Type1"
+                },
+                {
+                  "name": "type2",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Type2"
+                },
+                {
+                  "name": "status",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Status"
+                },
+                {
+                  "name": "updateBlock",
+                  "type": "uint32",
+                  "internalType": "uint32"
+                },
+                {
+                  "name": "createBlock",
+                  "type": "uint32",
+                  "internalType": "uint32"
+                }
+              ],
+              "internalType": "struct ITradePairs.Order"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "name": "getOrderRemainingQuantity",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_orderId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "name": "getRoleAdmin",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "role",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "name": "getRoleMember",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "role",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "index",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "name": "getRoleMemberCount",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "role",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "name": "getTradePair",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "tuple",
+              "components": [
+                {
+                  "name": "baseSymbol",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "quoteSymbol",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "buyBookId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "sellBookId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "minTradeAmount",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "maxTradeAmount",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "auctionPrice",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "auctionMode",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.AuctionMode"
+                },
+                {
+                  "name": "makerRate",
+                  "type": "uint8",
+                  "internalType": "uint8"
+                },
+                {
+                  "name": "takerRate",
+                  "type": "uint8",
+                  "internalType": "uint8"
+                },
+                {
+                  "name": "baseDecimals",
+                  "type": "uint8",
+                  "internalType": "uint8"
+                },
+                {
+                  "name": "baseDisplayDecimals",
+                  "type": "uint8",
+                  "internalType": "uint8"
+                },
+                {
+                  "name": "quoteDecimals",
+                  "type": "uint8",
+                  "internalType": "uint8"
+                },
+                {
+                  "name": "quoteDisplayDecimals",
+                  "type": "uint8",
+                  "internalType": "uint8"
+                },
+                {
+                  "name": "allowedSlippagePercent",
+                  "type": "uint8",
+                  "internalType": "uint8"
+                },
+                {
+                  "name": "addOrderPaused",
+                  "type": "bool",
+                  "internalType": "bool"
+                },
+                {
+                  "name": "pairPaused",
+                  "type": "bool",
+                  "internalType": "bool"
+                },
+                {
+                  "name": "postOnly",
+                  "type": "bool",
+                  "internalType": "bool"
+                },
+                {
+                  "name": "minPostAmount",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                }
+              ],
+              "internalType": "struct ITradePairs.TradePair"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "name": "getTradePairs",
+          "type": "function",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bytes32[]",
+              "internalType": "bytes32[]"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "name": "grantRole",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "role",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "account",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "hasRole",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "role",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "account",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "name": "initialize",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_orderbooks",
+              "type": "address",
+              "internalType": "address"
+            },
+            {
+              "name": "_portfolio",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "matchAuctionOrder",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_takerOrder",
+              "type": "tuple",
+              "components": [
+                {
+                  "name": "id",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "clientOrderId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "tradePairId",
+                  "type": "bytes32",
+                  "internalType": "bytes32"
+                },
+                {
+                  "name": "price",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "totalAmount",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "quantity",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "quantityFilled",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "totalFee",
+                  "type": "uint256",
+                  "internalType": "uint256"
+                },
+                {
+                  "name": "traderaddress",
+                  "type": "address",
+                  "internalType": "address"
+                },
+                {
+                  "name": "side",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Side"
+                },
+                {
+                  "name": "type1",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Type1"
+                },
+                {
+                  "name": "type2",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Type2"
+                },
+                {
+                  "name": "status",
+                  "type": "uint8",
+                  "internalType": "enum ITradePairs.Status"
+                },
+                {
+                  "name": "updateBlock",
+                  "type": "uint32",
+                  "internalType": "uint32"
+                },
+                {
+                  "name": "createBlock",
+                  "type": "uint32",
+                  "internalType": "uint32"
+                }
+              ],
+              "internalType": "struct ITradePairs.Order"
+            },
+            {
+              "name": "_maxNbrOfFills",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "quantityRemaining",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "maxNbrOfFills",
+          "type": "function",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "name": "pause",
+          "type": "function",
+          "inputs": [],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "pauseAddOrder",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "_addOrderPause",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "pauseTradePair",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "_tradePairPause",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "paused",
+          "type": "function",
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "name": "postOnly",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "_postOnly",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "removeOrderType",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "_type",
+              "type": "uint8",
+              "internalType": "enum ITradePairs.Type1"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "removeTradePair",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "renounceRole",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "role",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "account",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "revokeRole",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "role",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "account",
+              "type": "address",
+              "internalType": "address"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "setAllowedSlippagePercent",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "_allowedSlippagePercent",
+              "type": "uint8",
+              "internalType": "uint8"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "setAuctionMode",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "_mode",
+              "type": "uint8",
+              "internalType": "enum ITradePairs.AuctionMode"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "setAuctionPrice",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "_price",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "setDisplayDecimals",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "_displayDecimals",
+              "type": "uint8",
+              "internalType": "uint8"
+            },
+            {
+              "name": "_isBase",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "setMaxNbrOfFills",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_maxNbrOfFills",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "setMaxTradeAmount",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "_maxTradeAmount",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "setMinPostAmount",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "_minPostAmount",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "setMinTradeAmount",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "_minTradeAmount",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "supportsInterface",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "interfaceId",
+              "type": "bytes4",
+              "internalType": "bytes4"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "name": "tradePairExists",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            }
+          ],
+          "outputs": [
+            {
+              "name": "",
+              "type": "bool",
+              "internalType": "bool"
+            }
+          ],
+          "stateMutability": "view"
+        },
+        {
+          "name": "unpause",
+          "type": "function",
+          "inputs": [],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "unsolicitedCancel",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "_isBuyBook",
+              "type": "bool",
+              "internalType": "bool"
+            },
+            {
+              "name": "_maxCount",
+              "type": "uint256",
+              "internalType": "uint256"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        },
+        {
+          "name": "updateRate",
+          "type": "function",
+          "inputs": [
+            {
+              "name": "_tradePairId",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "_rate",
+              "type": "uint8",
+              "internalType": "uint8"
+            },
+            {
+              "name": "_rateType",
+              "type": "uint8",
+              "internalType": "enum ITradePairs.RateType"
+            }
+          ],
+          "outputs": [],
+          "stateMutability": "nonpayable"
+        }
+      ],
+      "_format": "hh-sol-artifact-1",
+      "sourceName": "contracts/TradePairs.sol",
+      "contractName": "TradePairs",
+      "linkReferences": {},
+      "deployedLinkReferences": {}
+    }
+  }
+]
