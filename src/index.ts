@@ -1,5 +1,5 @@
 /**
- * Public entry: `DexalotClient`, config factories, `Result`, `MemoryCache`, secrets vault, and version helpers.
+ * Public entry: `DexalotClient`, config factories, `Result`, `MemoryCache`, secrets vault, logging, and version helpers.
  * For mixins, `Utils`, and types, import from `dexalot-sdk/internal`.
  */
 import { DexalotClient } from './core/client.js';
@@ -10,6 +10,8 @@ export type { DexalotConfig } from './core/config.js';
 export { createConfig, loadConfigFromEnv } from './core/config.js';
 export { MemoryCache } from './utils/cache.js';
 export { Result } from './utils/result.js';
+export { getLogger } from './utils/observability.js';
+export type { Logger } from './utils/observability.js';
 export {
     generateSecretsVaultKey,
     secretsVaultGet,
