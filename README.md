@@ -69,6 +69,44 @@ pnpm run build
 
 Call `await client.initializeClient()` before trading RPC/API usage, optionally `await client.connect()`, and `await client.close()` when tearing down. Successful on-chain `Result` payloads use camelCase fields such as `txHash`, `operation`, and batch id lists where applicable.
 
+## Secrets Vault
+
+The Node-only secrets vault is exported from `dexalot-sdk/secrets-vault`. It stores encrypted values in a local Fernet-encrypted JSON file using the shared Dexalot vault format, so Python and TypeScript tooling can read the same vault file.
+
+Default path:
+
+```sh
+~/.dexalot/secrets_vault.json
+```
+
+Environment variables:
+
+```sh
+DEXALOT_SECRETS_VAULT_KEY=<your-fernet-key>
+DEXALOT_SECRETS_VAULT_PATH=~/.dexalot/secrets_vault.json
+```
+
+Example:
+
+```typescript
+import {
+    generateSecretsVaultKey,
+    secretsVaultSet,
+    secretsVaultGet,
+} from "dexalot-sdk/secrets-vault";
+
+const key = generateSecretsVaultKey();
+secretsVaultSet("~/.dexalot/secrets_vault.json", "PRIVATE_KEY", "0x...", key);
+const result = secretsVaultGet("~/.dexalot/secrets_vault.json", "PRIVATE_KEY", key);
+```
+
+A CLI helper is also available:
+
+```sh
+npm run secrets-vault -- keygen
+npm run secrets-vault -- add PRIVATE_KEY 0xabc123...
+```
+
 ## Quick Start
 
 ```typescript
