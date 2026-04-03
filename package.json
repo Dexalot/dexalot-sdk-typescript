@@ -1,6 +1,6 @@
 {
   "name": "dexalot-sdk",
-  "version": "0.5.10",
+  "version": "0.5.11",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
