@@ -1,11 +1,17 @@
 import { BaseClient } from '../../src/core/base';
 import { DexalotConfig, createConfig, loadConfigFromEnv } from '../../src/core/config';
-import { Wallet, JsonRpcProvider } from 'ethers';
+import { Wallet, JsonRpcProvider, Contract } from 'ethers';
 import { ENV, API_URL } from '../../src/constants';
 
 // Mock dependencies
 jest.mock('../../src/core/config');
 jest.mock('ethers');
+
+class TestBaseClientForContracts extends BaseClient {
+    public contractForSigner(provider: any, address: string, abi: any[]) {
+        return this._contractForSigner(provider, address, abi);
+    }
+}
 
 describe('BaseClient - Configuration Fallbacks', () => {
     beforeEach(() => {
@@ -156,5 +162,43 @@ describe('BaseClient - Configuration Fallbacks', () => {
             expect(symbols).toContain('USDC');
             expect(symbols.filter(s => s === 'AVAX').length).toBe(1);
         });
+    });
+});
+
+
+describe('BaseClient signer contract fallback', () => {
+    beforeEach(() => {
+        jest.clearAllMocks();
+    });
+
+    it('falls back to the signer provider on unsupported reconnect errors', () => {
+        const provider = {} as JsonRpcProvider;
+        const signer = {
+            provider: { kind: 'wallet-provider' },
+            connect: jest.fn().mockImplementation(() => {
+                throw Object.assign(new Error('cannot reconnect signer'), { code: 'UNSUPPORTED_OPERATION' });
+            }),
+        } as any;
+
+        const client = new TestBaseClientForContracts(signer);
+        const contractInstance = { ok: true };
+        (Contract as unknown as jest.Mock).mockImplementation(() => contractInstance);
+
+        const result = client.contractForSigner(provider, '0xabc', []);
+        expect(result).toBe(contractInstance);
+        expect((Contract as unknown as jest.Mock).mock.calls[0][2]).toBe(signer);
+    });
+
+    it('rethrows non-unsupported reconnect errors', () => {
+        const provider = {} as JsonRpcProvider;
+        const signer = {
+            provider: { kind: 'wallet-provider' },
+            connect: jest.fn().mockImplementation(() => {
+                throw new Error('different failure');
+            }),
+        } as any;
+
+        const client = new TestBaseClientForContracts(signer);
+        expect(() => client.contractForSigner(provider, '0xabc', [])).toThrow('different failure');
     });
 });

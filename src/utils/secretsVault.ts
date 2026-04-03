@@ -182,10 +182,7 @@ function writeVaultFile(resolvedPath: string, data: VaultFile): void {
     fs.renameSync(tmpPath, resolvedPath);
 
     try {
-        const stat = fs.statSync(resolvedPath);
-        if ((stat.mode & 0o777) !== 0o600) {
-            fs.chmodSync(resolvedPath, 0o600);
-        }
+        fs.chmodSync(resolvedPath, 0o600);
     } catch {
         // Ignore permission errors on some platforms
     }

@@ -3,12 +3,22 @@ import DexalotClientDefault, {
     createConfig,
     getLogger,
     getVersion,
+    loadConfigFromEnv,
     MemoryCache,
     Result,
     version,
 } from '../../src/index';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as internal from '../../src/internal';
-import { generateSecretsVaultKey } from '../../src/secrets-vault';
+import {
+    generateSecretsVaultKey,
+    secretsVaultGet,
+    secretsVaultList,
+    secretsVaultRemove,
+    secretsVaultSet,
+} from '../../src/secrets-vault';
 import { OrderSide, OrderType, OrderStatus } from '../../src/types/index';
 
 describe('package entrypoints', () => {
@@ -30,6 +40,23 @@ describe('package entrypoints', () => {
         expect(getLogger).toBe(internal.getLogger);
         const log = getLogger('test');
         expect(typeof log.info).toBe('function');
+    });
+
+    it('root config re-exports and secrets-vault subpath re-exports are callable', () => {
+        expect(loadConfigFromEnv).toBe(internal.loadConfigFromEnv);
+        expect(createConfig()).toBeDefined();
+
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dexalot-entrypoint-vault-'));
+        const vaultPath = path.join(tmpDir, 'vault.json');
+        const key = generateSecretsVaultKey();
+        try {
+            expect(secretsVaultSet(vaultPath, 'ENTRY', 'value', key).success).toBe(true);
+            expect(secretsVaultGet(vaultPath, 'ENTRY', key).data).toBe('value');
+            expect(secretsVaultList(vaultPath).data).toEqual(['ENTRY']);
+            expect(secretsVaultRemove(vaultPath, 'ENTRY').success).toBe(true);
+        } finally {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+        }
     });
 
     it('secrets-vault subpath exports key helper', () => {

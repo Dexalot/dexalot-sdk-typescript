@@ -3,6 +3,7 @@ import { CLOBClient } from '../../src/core/clob';
 import { createConfig } from '../../src/core/config';
 import { ENV, DEFAULTS, ENDPOINTS } from '../../src/constants';
 import { Utils } from '../../src/utils';
+import * as inputValidators from '../../src/utils/inputValidators';
 import { Contract, ethers, toBigInt } from 'ethers';
 
 // Keep real ethers helpers (hex / bytes32) for CLOB order-id logic; mock Contract only.
@@ -2018,4 +2019,455 @@ describe('CLOBClient', () => {
             expect(mockContract.getOrderByClientId).toHaveBeenCalled();
         });
     });
+
+describe('order helper branch coverage', () => {
+    it('_coerceOrderNumeric covers null, bigint, blank string, and invalid values', () => {
+        expect((client as any)._coerceOrderNumeric(null, 'price')).toBe(0);
+        expect((client as any)._coerceOrderNumeric(7n, 'price')).toBe(7);
+        expect((client as any)._coerceOrderNumeric('   ', 'price')).toBe(0);
+        expect(() => (client as any)._coerceOrderNumeric(Number.POSITIVE_INFINITY, 'price')).toThrow("Order field 'price' must be numeric.");
+        expect(() => (client as any)._coerceOrderNumeric({ bad: true }, 'price')).toThrow("Order field 'price' must be numeric.");
+    });
+
+
+    it('_coerceOrderNumeric covers direct number, invalid string, and object conversion branches', () => {
+        expect((client as any)._coerceOrderNumeric(3.5, 'price')).toBe(3.5);
+        expect(() => (client as any)._coerceOrderNumeric('abc', 'price')).toThrow("Order field 'price' must be numeric.");
+        expect((client as any)._coerceOrderNumeric({ valueOf: () => 9 }, 'price')).toBe(9);
+    });
+
+    it('_coerceOrderBlock covers bigint, hex string, and invalid values', () => {
+        expect((client as any)._coerceOrderBlock(15n, 'createBlock')).toBe(15);
+        expect((client as any)._coerceOrderBlock('0x10', 'createBlock')).toBe(16);
+        expect(() => (client as any)._coerceOrderBlock(undefined, 'createBlock')).toThrow("Order missing required 'createBlock' field.");
+        expect(() => (client as any)._coerceOrderBlock(true, 'createBlock')).toThrow("Order field 'createBlock' must be an integer block number.");
+        expect(() => (client as any)._coerceOrderBlock(1.5, 'createBlock')).toThrow("Order field 'createBlock' must be an integer block number.");
+        expect(() => (client as any)._coerceOrderBlock('   ', 'createBlock')).toThrow("Order missing required 'createBlock' field.");
+        expect(() => (client as any)._coerceOrderBlock({ bad: true }, 'createBlock')).toThrow("Order field 'createBlock' must be an integer block number.");
+    });
+
+
+    it('_coerceOrderBlock covers invalid string and object-conversion branches', () => {
+        expect(() => (client as any)._coerceOrderBlock('abc', 'createBlock')).toThrow("Order field 'createBlock' must be an integer block number.");
+        expect((client as any)._coerceOrderBlock({ valueOf: () => 12 }, 'createBlock')).toBe(12);
+    });
+
+    it('_enumToName and _toHexIdentifier cover bigint/Uint8Array/fallback branches', () => {
+        expect((client as any)._enumToName(1n, { 1: 'LIMIT' })).toBe('LIMIT');
+        expect((client as any)._enumToName(7, { 1: 'LIMIT' })).toBe(7);
+        expect((client as any)._enumToName('BUY', { 0: 'BUY' })).toBe('BUY');
+
+        expect((client as any)._toHexIdentifier(new Uint8Array([0xab, 0xcd]))).toBe('0xabcd');
+        expect((client as any)._toHexIdentifier(5n)).toBe(ethers.toBeHex(5n, 32));
+        jest.spyOn(client as any, '_slotToBytes32Hex').mockReturnValue('0xslot');
+        expect((client as any)._toHexIdentifier({ weird: true })).toBe('0xslot');
+    });
+
+
+
+    it('_findPairInfoByTradePairId and _resolveTradePairIdFromPair cover undefined and lookup branches', () => {
+        expect((client as any)._findPairInfoByTradePairId(undefined)).toBeUndefined();
+        expect((client as any)._resolveTradePairIdFromPair(undefined)).toBeUndefined();
+        expect((client as any)._resolveTradePairIdFromPair('UNKNOWN/PAIR')).toBeUndefined();
+        expect((client as any)._resolveTradePairIdFromPair('AVAX/USDC')).toBe('0xPairId_AVAX_USDC');
+    });
+
+    it('_transformOrderFromAPI fails when pair cannot be determined', () => {
+        expect(() => (client as any)._transformOrderFromAPI({
+            id: VALID_ORDER_ID,
+            clientordid: VALID_CLIENT_ID,
+            tradePairId: '0x' + '3'.repeat(64),
+            price: '1',
+            totalAmount: '1',
+            quantity: '1',
+            quantityFilled: '0',
+            totalFee: '0',
+            traderaddress: mockAddress,
+            side: 'BUY',
+            type1: 'LIMIT',
+            type2: 'GTC',
+            status: 'NEW',
+            updateBlock: 2,
+            createBlock: 1,
+        })).toThrow('Could not determine pair from order data.');
+    });
+
+    it('getOrderByClientId uses default formatting failure message when _formatOrderData has no error text', async () => {
+        jest.spyOn(client as any, '_fetchOrderByClientIdPath').mockResolvedValue(makeContractOrderRow());
+        jest.spyOn(client as any, '_formatOrderData').mockResolvedValue({ success: false, error: '', data: null });
+        const result = await client.getOrderByClientId(VALID_CLIENT_ID);
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('Order formatting failed');
+    });
+
+    it('replaceOrder returns default not-found message when getOrder succeeds without data', async () => {
+        jest.spyOn(client, 'getOrder').mockResolvedValue({ success: true, data: null, error: '' } as any);
+        const result = await client.replaceOrder(VALID_ORDER_ID, 21, 11);
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('Order not found');
+    });
+
+    it('replaceOrder returns pair-data error when order pair is unknown', async () => {
+        jest.spyOn(client, 'getOrder').mockResolvedValue({
+            success: true,
+            data: { ...(makeContractOrderRow()[0] && {
+                internalOrderId: VALID_ORDER_ID,
+                clientOrderId: VALID_CLIENT_ID,
+                pair: 'BTC/USDT',
+                side: 'BUY',
+                type1: 'LIMIT',
+                type2: 'GTC',
+                status: 'NEW',
+                price: 10,
+                totalAmount: 10,
+                quantity: 1,
+                quantityFilled: 0,
+                totalFee: 0,
+                traderAddress: mockAddress,
+                tradePairId: '0xunknown',
+                updateBlock: 2,
+                createBlock: 1,
+                createTs: null,
+                updateTs: null,
+            }) },
+        } as any);
+        const result = await client.replaceOrder(VALID_ORDER_ID, 21, 11);
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('Pair data not found for order');
+    });
+
+    it('cancelAddList returns default not-found message when fetched order details are empty', async () => {
+        jest.spyOn(client, 'getOrder').mockResolvedValue({ success: true, data: null, error: '' } as any);
+        const result = await client.cancelAddList([
+            { order_id: VALID_ORDER_ID, pair: 'AVAX/USDC', side: 'BUY', price: 11, quantity: 1 },
+        ] as any, [] as any);
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('Order not found');
+    });
+
+    it('_formatOrderData fails when contract order data is too short', async () => {
+        const result = await client._formatOrderData([1, 2, 3] as any);
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('createBlock/updateBlock');
+    });
+
+    it('_formatOrderData propagates getClobPairs failure when trade pair metadata is missing', async () => {
+        client.pairs = {};
+        jest.spyOn(client, 'getClobPairs').mockResolvedValue({ success: false, error: 'pairs failed' } as any);
+        const result = await client._formatOrderData(makeContractOrderRow({ tradePairId: '0xmissingpair' }));
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('pairs failed');
+    });
+
+    it('_formatOrderData returns pair-resolution failure after refreshing pairs', async () => {
+        client.pairs = {};
+        jest.spyOn(client, 'getClobPairs').mockResolvedValue({ success: true, data: {} } as any);
+        const result = await client._formatOrderData(makeContractOrderRow({ tradePairId: '0xmissingpair' }));
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('Could not determine pair from order data.');
+    });
+
+    it('_formatOrderData catches thrown formatter errors', async () => {
+        const bad = makeContractOrderRow({ createBlock: true });
+        const result = await client._formatOrderData(bad as any);
+        expect(result.success).toBe(false);
+        expect(result.error).toContain("Order field 'createBlock' must be an integer block number.");
+    });
+    it('_enumToName falls back to numeric values for unmapped bigint enums', () => {
+        expect((client as any)._enumToName(99n, { 0: 'ZERO' })).toBe(99);
+    });
+
+    it('_resolveOrderReference stringifies non-Error conversion failures', async () => {
+        const spy = jest.spyOn(client as any, '_orderIdToBytes32Hex').mockImplementation(() => {
+            throw 'bad-bytes';
+        });
+        const result = await (client as any)._resolveOrderReference(mockContract, VALID_ORDER_ID);
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('bad-bytes');
+        spy.mockRestore();
+    });
+
+    it('_resolveOrderReference stringifies non-Error contract lookup failures', async () => {
+        mockContract.getOrder.mockRejectedValueOnce('rpc-string');
+        const result = await (client as any)._resolveOrderReference(mockContract, VALID_ORDER_ID);
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('rpc-string');
+    });
+
+    it('_getOrCreateWsManager omits auth when signer is absent', () => {
+        delete process.env.PRIVATE_KEY;
+        const cfg = createConfig({
+            parentEnv: 'fuji-multi',
+            wsManagerEnabled: true,
+            wsPingInterval: 3600,
+            wsPingTimeout: 3600,
+        });
+        const cNoSigner = new TestClient(cfg);
+        cNoSigner.apiBaseUrl = 'https://api.dexalot-test.com';
+        const mgr = (cNoSigner as any)._getOrCreateWsManager();
+        expect(mgr).not.toBeNull();
+        expect((mgr as any).dexalot.auth).toBeUndefined();
+    });
+
+    it('subscribeToEvents uses default invalid-pair error text when validation omits one', async () => {
+        const cfg = createConfig({ parentEnv: 'fuji-multi', wsManagerEnabled: true });
+        const c = new TestClient(cfg);
+        const manager = { subscribe: jest.fn(), isConnected: true, connect: jest.fn() };
+        jest.spyOn(c as any, '_getOrCreateWsManager').mockReturnValue(manager as any);
+        const spy = jest.spyOn(inputValidators, 'validatePairFormat').mockReturnValue({ success: false, error: '' } as any);
+        await expect(c.subscribeToEvents('OrderBook/AVAX/USDC', () => {}, false)).rejects.toThrow(
+            'Invalid trading pair in WebSocket topic: AVAX/USDC'
+        );
+        spy.mockRestore();
+    });
+
+    it('subscribeToEvents falls back to base display decimals and the default orderbook decimal', async () => {
+        const cfg = createConfig({ parentEnv: 'fuji-multi', wsManagerEnabled: true });
+        const c = new TestClient(cfg);
+        const manager = { subscribe: jest.fn(), isConnected: true, connect: jest.fn() };
+        jest.spyOn(c as any, '_getOrCreateWsManager').mockReturnValue(manager as any);
+        jest.spyOn(c as any, '_ensurePairExistsAsync').mockResolvedValue(true);
+
+        c.pairs = { 'AVAX/USDC': { pair: 'AVAX/USDC', base_display_decimals: 4 } as any };
+        await c.subscribeToEvents('AVAX/USDC', () => {});
+        expect(manager.subscribe).toHaveBeenLastCalledWith(
+            'AVAX/USDC',
+            expect.any(Function),
+            false,
+            { kind: 'orderbook', pair: 'AVAX/USDC', decimal: 4 }
+        );
+
+        c.pairs = {} as any;
+        await c.subscribeToEvents('AVAX/USDC', () => {});
+        expect(manager.subscribe).toHaveBeenLastCalledWith(
+            'AVAX/USDC',
+            expect.any(Function),
+            false,
+            { kind: 'orderbook', pair: 'AVAX/USDC', decimal: 8 }
+        );
+    });
+
+    it('closeWebsocket uses the default grace period when omitted', async () => {
+        jest.useFakeTimers();
+        try {
+            const cfg = createConfig({ parentEnv: 'fuji-multi', wsManagerEnabled: true });
+            const c = new TestClient(cfg);
+            const mgr = { disconnect: jest.fn() };
+            (c as any)._wsManager = mgr;
+            const done = c.closeWebsocket();
+            jest.advanceTimersByTime(100);
+            await done;
+            expect(mgr.disconnect).toHaveBeenCalled();
+        } finally {
+            jest.useRealTimers();
+        }
+    });
+
+    it('_transformOrderFromAPI resolves tradePairId from pair and accepts alias fields', () => {
+        const order = (client as any)._transformOrderFromAPI({
+            id: VALID_ORDER_ID,
+            client_order_id: VALID_CLIENT_ID,
+            pair: 'AVAX/USDC',
+            price: '1.5',
+            total_amount: '1.5',
+            quantity: '1.0',
+            filled_quantity: '0.5',
+            total_fee: '0.01',
+            traderAddress: '0xabc',
+            side: 'BUY',
+            type1: 'LIMIT',
+            type2: 'GTC',
+            status: 'PARTIAL',
+            update_block: '12',
+            create_block: '11',
+            ts: '2024-01-01T00:00:00.000Z',
+            updatets: '2024-01-02T00:00:00.000Z',
+        });
+        expect(order.tradePairId).toBe('0xPairId_AVAX_USDC');
+        expect(order.updateBlock).toBe(12);
+        expect(order.createBlock).toBe(11);
+        expect(order.createTs).toBe('2024-01-01T00:00:00.000Z');
+        expect(order.updateTs).toBe('2024-01-02T00:00:00.000Z');
+    });
+
+    it('_transformOrderFromAPI accepts legacy aliases and unmapped numeric enums', () => {
+        const order = (client as any)._transformOrderFromAPI({
+            id: VALID_ORDER_ID,
+            clientordid: VALID_CLIENT_ID,
+            tradepairid: '0xPairId_AVAX_USDC',
+            pair: 'AVAX/USDC',
+            price: '2',
+            totalamount: '2',
+            quantity: '1',
+            quantityfilled: '0',
+            totalfee: '0',
+            traderaddress: '0xlegacy',
+            side: 9n,
+            type1: 8n,
+            type2: 7n,
+            status: 7n,
+            updateBlock: 20n,
+            createBlock: 10n,
+            timestamp: '2024-01-03T00:00:00.000Z',
+        });
+        expect(order.clientOrderId).toBe(VALID_CLIENT_ID);
+        expect(order.side).toBe('9');
+        expect(order.type1).toBe('8');
+        expect(order.type2).toBe('7');
+        expect(order.status).toBe('7');
+        expect(order.createTs).toBe('2024-01-03T00:00:00.000Z');
+        expect(order.updateTs).toBeNull();
+    });
+
+    it('_transformOrderFromAPI falls back to empty traderAddress and direct timestamp aliases', () => {
+        const order = (client as any)._transformOrderFromAPI({
+            id: VALID_ORDER_ID,
+            clientOrderId: VALID_CLIENT_ID,
+            pair: 'AVAX/USDC',
+            price: '3',
+            totalAmount: '3',
+            quantity: '1',
+            quantityFilled: '0',
+            totalFee: '0',
+            side: 'BUY',
+            type1: 'LIMIT',
+            type2: 'GTC',
+            status: 'NEW',
+            updateBlock: 31,
+            createBlock: 30,
+            create_ts: '2024-01-04T00:00:00.000Z',
+            updateTs: '2024-01-05T00:00:00.000Z',
+        });
+        expect(order.traderAddress).toBe('');
+        expect(order.createTs).toBe('2024-01-04T00:00:00.000Z');
+        expect(order.updateTs).toBe('2024-01-05T00:00:00.000Z');
+    });
+
+    it('_transformOrderFromAPI prefers direct createTs over later timestamp aliases', () => {
+        const order = (client as any)._transformOrderFromAPI({
+            id: VALID_ORDER_ID,
+            clientOrderId: VALID_CLIENT_ID,
+            pair: 'AVAX/USDC',
+            price: '4',
+            totalAmount: '4',
+            quantity: '1',
+            quantityFilled: '0',
+            totalFee: '0',
+            side: 'BUY',
+            type1: 'LIMIT',
+            type2: 'GTC',
+            status: 'NEW',
+            updateBlock: 41,
+            createBlock: 40,
+            createTs: '2024-01-06T00:00:00.000Z',
+            create_ts: 'ignored',
+            timestamp: 'ignored-too',
+            ts: 'ignored-three',
+        });
+        expect(order.createTs).toBe('2024-01-06T00:00:00.000Z');
+    });
+
+    it('_transformOrderFromAPI falls back to null createTs when no timestamp aliases are present', () => {
+        const order = (client as any)._transformOrderFromAPI({
+            id: VALID_ORDER_ID,
+            clientOrderId: VALID_CLIENT_ID,
+            pair: 'AVAX/USDC',
+            price: '5',
+            totalAmount: '5',
+            quantity: '1',
+            quantityFilled: '0',
+            totalFee: '0',
+            side: 'BUY',
+            type1: 'LIMIT',
+            type2: 'GTC',
+            status: 'NEW',
+            updateBlock: 51,
+            createBlock: 50,
+        });
+        expect(order.createTs).toBeNull();
+    });
+
+    it('getOrder uses default formatting failure message when _formatOrderData has no error text', async () => {
+        jest.spyOn(client as any, '_resolveOrderReference').mockResolvedValue({
+            success: true,
+            data: { idType: 'internal', orderData: makeContractOrderRow() },
+        } as any);
+        jest.spyOn(client as any, '_formatOrderData').mockResolvedValue({ success: false, error: '', data: null } as any);
+        const result = await client.getOrder(VALID_ORDER_ID);
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('Order formatting failed');
+    });
+
+    it('getOrderByClientId falls back to an empty traderAddress when the contract field is null', async () => {
+        mockContract.getOrderByClientId.mockResolvedValue(
+            makeContractOrderRow({ traderAddress: null as any })
+        );
+        const result = await client.getOrderByClientId(VALID_CLIENT_ID);
+        expect(result.success).toBe(true);
+        expect(result.data!.traderAddress).toBe('');
+    });
+
+    it('getOrderByClientId falls back to an empty traderAddress when the contract field is empty', async () => {
+        mockContract.getOrderByClientId.mockResolvedValue(
+            makeContractOrderRow({ traderAddress: '' as any })
+        );
+        const result = await client.getOrderByClientId(VALID_CLIENT_ID);
+        expect(result.success).toBe(true);
+        expect(result.data!.traderAddress).toBe('');
+    });
+
+    it('getOrderByClientId stringifies non-string trader addresses and unmapped enums from contract data', async () => {
+        mockContract.getOrderByClientId.mockResolvedValue(
+            makeContractOrderRow({ traderAddress: 0n as any, side: 99, type1: 98, type2: 97, status: 7 })
+        );
+        const result = await client.getOrderByClientId(VALID_CLIENT_ID);
+        expect(result.success).toBe(true);
+        expect(result.data!.traderAddress).toBe('0');
+        expect(result.data!.side).toBe('99');
+        expect(result.data!.type1).toBe('98');
+        expect(result.data!.type2).toBe('97');
+        expect(result.data!.status).toBe('7');
+    });
+
+    it('getOrderByClientId stringifies non-Error formatter failures during contract formatting', async () => {
+        const unitSpy = jest.spyOn(Utils, 'unitConversion').mockImplementation(() => {
+            throw 'plain-format-failure';
+        });
+        mockContract.getOrderByClientId.mockResolvedValueOnce(makeContractOrderRow());
+        const result = await client.getOrderByClientId(VALID_CLIENT_ID);
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('plain-format-failure');
+        unitSpy.mockRestore();
+    });
+
+    it('getOrderByClientId stringifies non-Error formatter failures', async () => {
+        mockContract.getOrderByClientId.mockRejectedValueOnce('plain-contract-failure');
+        const result = await client.getOrderByClientId(VALID_CLIENT_ID);
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('Error getting order by client ID: plain-contract-failure');
+    });
+
+    it('getOrderByClientId returns Error messages from bytes32 conversion failures', async () => {
+        const spy = jest.spyOn(client as any, '_orderIdToBytes32Hex').mockImplementation(() => {
+            throw new Error('bad bytes');
+        });
+        const result = await client.getOrderByClientId('any');
+        expect(result.success).toBe(false);
+        expect(result.error).toBe('bad bytes');
+        spy.mockRestore();
+    });
+
+    it('_formatOrderData stringifies non-string trader addresses and unmapped enums', async () => {
+        const result = await client._formatOrderData(
+            makeContractOrderRow({ traderAddress: 0n as any, side: 99, type1: 98, type2: 97, status: 96 }) as any
+        );
+        expect(result.success).toBe(true);
+        expect(result.data!.traderAddress).toBe('0');
+        expect(result.data!.side).toBe('99');
+        expect(result.data!.type1).toBe('98');
+        expect(result.data!.type2).toBe('97');
+        expect(result.data!.status).toBe('96');
+    });
+});
+
 });

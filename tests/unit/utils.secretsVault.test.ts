@@ -327,6 +327,47 @@ describe('secretsVault', () => {
             }
         });
 
+        it('should expand tilde using HOMEDRIVE and HOMEPATH when USERPROFILE is absent on win32', () => {
+            const fakeHome = path.join(tmpDir, 'fake-win-drive-home');
+            fs.mkdirSync(fakeHome, { recursive: true });
+            const oldPlatform = process.platform;
+            const oldUserProfile = process.env.USERPROFILE;
+            const oldHomeDrive = process.env.HOMEDRIVE;
+            const oldHomePath = process.env.HOMEPATH;
+            const oldHome = process.env.HOME;
+            Object.defineProperty(process, 'platform', { value: 'win32' });
+            delete process.env.USERPROFILE;
+            process.env.HOMEDRIVE = fakeHome;
+            process.env.HOMEPATH = `${path.sep}subhome`;
+            fs.mkdirSync(path.join(fakeHome, 'subhome'), { recursive: true });
+            delete process.env.HOME;
+
+            const suffix = Date.now();
+            const tildeVault = path.join('~', `.dexalot-win-drive-${suffix}`, 'vault.db');
+            const encKey = generateSecretsVaultKey();
+
+            try {
+                const result = secretsVaultSet(tildeVault, 'WIN2', 'value', encKey);
+                expect(result.success).toBe(true);
+                expect(fs.existsSync(path.join(fakeHome, 'subhome', `.dexalot-win-drive-${suffix}`, 'vault.db'))).toBe(true);
+            } finally {
+                Object.defineProperty(process, 'platform', { value: oldPlatform });
+                if (oldUserProfile === undefined) delete process.env.USERPROFILE;
+                else process.env.USERPROFILE = oldUserProfile;
+                if (oldHomeDrive === undefined) delete process.env.HOMEDRIVE;
+                else process.env.HOMEDRIVE = oldHomeDrive;
+                if (oldHomePath === undefined) delete process.env.HOMEPATH;
+                else process.env.HOMEPATH = oldHomePath;
+                if (oldHome === undefined) delete process.env.HOME;
+                else process.env.HOME = oldHome;
+                const expandedDir = path.join(fakeHome, `.dexalot-win-drive-${suffix}`);
+                if (fs.existsSync(expandedDir)) {
+                    fs.rmSync(expandedDir, { recursive: true, force: true });
+                }
+            }
+        });
+
+
         it('should expand tilde in vault path', () => {
             const fakeHome = path.join(tmpDir, 'fake-home');
             fs.mkdirSync(fakeHome, { recursive: true });
@@ -461,6 +502,25 @@ describe('secretsVault', () => {
             expect(result.success).toBe(false);
             expect(result.error).toContain("Invalid secrets vault entry for key 'BROKEN'");
         });
+
+
+        it('should fail when a vault entry payload is null', () => {
+            const freshVault = path.join(tmpDir, 'bad_entry_null.db');
+            fs.writeFileSync(
+                freshVault,
+                JSON.stringify({
+                    format: 'dexalot-secrets-vault',
+                    version: 1,
+                    entries: { NULLISH: null },
+                }, null, 2) + '\n',
+                'utf8'
+            );
+
+            const result = secretsVaultList(freshVault);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain("Invalid secrets vault entry for key 'NULLISH'");
+        });
+
 
         it('should restore owner-only permissions on rewrite', () => {
             const freshVault = path.join(tmpDir, 'permissions_vault.db');

@@ -326,4 +326,146 @@ describe('TransferClient extra branch coverage', () => {
         expect(r.error).toContain('portfolio');
         spy.mockRestore();
     });
+
+    it('getTokenDetails accepts chain_id and evmdecimals variants', async () => {
+        (client as any).axios.request.mockResolvedValue({
+            data: [
+                {
+                    symbol: 'ALT',
+                    env: 'prod-multi',
+                    address: '0xalt',
+                    name: 'Alt',
+                    evmdecimals: 7,
+                    chain_id: 99,
+                },
+            ],
+        });
+        const r = await client.getTokenDetails('ALT');
+        expect(r.success).toBe(true);
+        expect((r.data as any)['prod-multi'].decimals).toBe(7);
+        expect((r.data as any)['prod-multi'].chainId).toBe(99);
+    });
+
+    it('getDepositBridgeFee uses fallback chain-resolution message when resolver returns no error', async () => {
+        jest.spyOn(client, 'resolveChainReference').mockReturnValue({ success: false, error: '' } as any);
+        const r = await client.getDepositBridgeFee('USDC', 1, 'Ghost');
+        expect(r.success).toBe(false);
+        expect(r.error).toContain("Could not resolve source chain 'Ghost'.");
+    });
+
+    it('depositToken reports available PortfolioMain chains when deployment missing', async () => {
+        client.deployments = { PortfolioMain: { Avalanche: { address: '0xpm', abi: [] } } } as any;
+        const r = await client.deposit('USDC', 1, 'Fuji');
+        expect(r.success).toBe(false);
+        expect(r.error).toContain("Available: Avalanche");
+    });
+
+    it('_getL1NativeBalance records fallback provider errors', async () => {
+        jest.spyOn(client, 'isChainRpcAvailable').mockReturnValue(false);
+        client.subnetProvider = { getBalance: jest.fn().mockRejectedValue(new Error('fallback fail')) } as any;
+        const entry = await client._getL1NativeBalance('0xaddr');
+        expect(String(entry.balance)).toContain('fallback fail');
+    });
+
+    it('_getErc20Balance records missing error message text safely', async () => {
+        client.tokenData = {
+            X: { e: { chainId: 1, address: '0xtok', decimals: 18, env: 'e' } },
+        };
+        (Contract as unknown as jest.Mock).mockImplementationOnce(() => ({
+            balanceOf: jest.fn().mockRejectedValue({}),
+        }));
+        const r = await (client as any)._getErc20Balance('C', 1, {} as any, '0xx', 'X');
+        expect(r.balance).toContain('Error:');
+    });
+
+    it('getTokenDetails accepts direct chainid and evmdecimals fields', async () => {
+        (client as any).axios.request.mockResolvedValue({
+            data: [
+                {
+                    symbol: 'DIRECT',
+                    env: 'prod-multi',
+                    address: '0xdirect',
+                    name: 'Direct',
+                    evmdecimals: 5,
+                    chainid: 77,
+                },
+            ],
+        });
+        const r = await client.getTokenDetails('DIRECT');
+        expect(r.success).toBe(true);
+        expect((r.data as any)['prod-multi'].chainId).toBe(77);
+    });
+
+    it('getDepositBridgeFee reports available none when PortfolioMain deployments are absent', async () => {
+        client.deployments = { PortfolioMain: {} } as any;
+        const r = await client.getDepositBridgeFee('USDC', 1, 'Avalanche');
+        expect(r.success).toBe(false);
+        expect(r.error).toContain('Available: none');
+    });
+
+    it('deposit reports available none when PortfolioMain deployments are absent', async () => {
+        client.deployments = { PortfolioMain: {} } as any;
+        const r = await client.deposit('USDC', 1, 'Avalanche');
+        expect(r.success).toBe(false);
+        expect(r.error).toContain('Available: none');
+    });
+
+    it('getAllChainWalletBalances uses String(error) when native balance failure has no message', async () => {
+        jest.spyOn(client, '_resolveQueryAddress').mockResolvedValue({ success: true, data: '0xx' } as any);
+        jest.spyOn(client, 'getAvailableChainNames').mockReturnValue(['Avalanche']);
+        jest.spyOn(client, 'getProviderForChain').mockReturnValue({ getBalance: jest.fn().mockRejectedValue('rpc-string') } as any);
+        jest.spyOn(client, '_getL1NativeBalance').mockResolvedValue({ chain: 'Dexalot L1', symbol: 'ALOT', balance: '1', type: 'Native' } as any);
+        const r = await client.getAllChainWalletBalances();
+        expect(r.success).toBe(true);
+        expect(String(r.data!.chain_balances.find((x: any) => x.chain === 'Avalanche')?.balance)).toContain('rpc-string');
+    });
+
+    it('_getL1NativeBalance uses String(error) when failover error has no message', async () => {
+        jest.spyOn(client, 'isChainRpcAvailable').mockReturnValue(true);
+        jest.spyOn(client, 'withRpcFailover').mockRejectedValue('rpc-string');
+        const entry = await client._getL1NativeBalance('0xaddr');
+        expect(String(entry.balance)).toContain('rpc-string');
+    });
+
+    it('_getErc20Balance falls back to 18 decimals when token decimals are zero', async () => {
+        client.tokenData = {
+            Z: { e: { chainId: 1, address: '0xzero', decimals: 0, env: 'e' } },
+        };
+        const unitSpy = Utils.unitConversion as jest.Mock;
+        (Contract as unknown as jest.Mock).mockImplementationOnce(() => ({
+            balanceOf: jest.fn().mockResolvedValue(4n),
+        }));
+        const r = await (client as any)._getErc20Balance('C', 1, {} as any, '0xx', 'Z');
+        expect(r.balance).toBe('1');
+        expect(unitSpy).toHaveBeenCalledWith('4', 18, false);
+    });
+
+    it('getTokenDetails falls back to default decimals and chainId when source fields are absent', async () => {
+        (client as any).axios.request.mockResolvedValue({
+            data: [
+                {
+                    symbol: 'DEFAULTS',
+                    env: 'prod-multi',
+                    address: '0xdefaults',
+                    name: 'Defaults',
+                },
+            ],
+        });
+        const r = await client.getTokenDetails('DEFAULTS');
+        expect(r.success).toBe(true);
+        expect((r.data as any)['prod-multi'].decimals).toBe(18);
+        expect((r.data as any)['prod-multi'].chainId).toBe(0);
+    });
+
+    it('missing PortfolioMain deployments report available none when the deployment map itself is absent', async () => {
+        client.deployments = {} as any;
+        const bridgeFee = await client.getDepositBridgeFee('USDC', 1, 'Avalanche');
+        expect(bridgeFee.success).toBe(false);
+        expect(bridgeFee.error).toContain('Available: none');
+
+        const deposit = await client.deposit('USDC', 1, 'Avalanche');
+        expect(deposit.success).toBe(false);
+        expect(deposit.error).toContain('Available: none');
+    });
+
 });

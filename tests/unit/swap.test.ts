@@ -75,6 +75,17 @@ describe('SwapClient', () => {
         spy.mockRestore();
     });
 
+
+    it('_resolveChainIdResult falls back to the default resolver message', () => {
+        jest.spyOn(client, 'resolveChainReference').mockReturnValue({
+            success: false,
+            error: '',
+        } as any);
+        const r = (client as any)._resolveChainIdResult('SomeChain');
+        expect(r.success).toBe(false);
+        expect(r.error).toContain("Could not resolve chain identifier 'SomeChain'");
+    });
+
     it('getSwapPairs fails when _resolveChainIdResult fails', async () => {
         jest.spyOn(client as any, '_resolveChainIdResult').mockReturnValue({
             success: false,

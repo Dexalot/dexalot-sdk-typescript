@@ -1,5 +1,7 @@
 import { DexalotClient } from '../../src/core/client';
 import { Utils } from '../../src/utils';
+import * as observability from '../../src/utils/observability';
+import { version } from '../../src/version';
 import { ethers } from 'ethers';
 
 // Mock ethers
@@ -52,5 +54,25 @@ describe('DexalotClient', () => {
         await client.login();
 
         expect(spyAuth).not.toHaveBeenCalled();
+    });
+
+    it('configureLogging should forward explicit and default args', () => {
+        const spy = jest.spyOn(observability, 'configureLogging').mockImplementation(() => undefined);
+        DexalotClient.configureLogging('debug', 'json');
+        DexalotClient.configureLogging();
+        expect(spy).toHaveBeenNthCalledWith(1, 'debug', 'json');
+        expect(spy).toHaveBeenNthCalledWith(2, undefined, 'console');
+        spy.mockRestore();
+    });
+
+    it('getVersion returns the package version constant', () => {
+        expect(DexalotClient.getVersion()).toBe(version);
+    });
+
+    it('unitConversion defaults to toBase=true when omitted', () => {
+        const spy = jest.spyOn(Utils, 'unitConversion').mockReturnValue('default-ok');
+        expect(DexalotClient.unitConversion('2', 6)).toBe('default-ok');
+        expect(spy).toHaveBeenCalledWith('2', 6, true);
+        spy.mockRestore();
     });
 });

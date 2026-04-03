@@ -748,6 +748,31 @@ describe('WebSocketManager', () => {
             mgr.disconnect();
         });
 
+
+        it('private subscribe uses zero offset when wsTimeOffsetMs is undefined', async () => {
+            const mgr = new WebSocketManager(
+                wsUrl,
+                {},
+                {
+                    auth: {
+                        getAddress: async () => '0xabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd',
+                        signMessage: async () => '0xsig',
+                    },
+                }
+            );
+            mgr.subscribe('privNoOffset', jest.fn(), true);
+            mgr.connect();
+            jest.advanceTimersByTime(10);
+            const before = Date.now();
+            await (mgr as any).sendSubscription('privNoOffset');
+            const mockWs = (mgr as any).ws as MockWebSocket;
+            const raw = mockWs.sentMessages.find((m: string) => m.includes('privNoOffset'));
+            const ts = JSON.parse(raw!).timestamp as number;
+            expect(ts).toBeGreaterThanOrEqual(before);
+            expect(ts).toBeLessThan(before + 2000);
+            mgr.disconnect();
+        });
+
         it('private subscribe leaves signature without 0x prefix unchanged', async () => {
             const mgr = new WebSocketManager(
                 wsUrl,

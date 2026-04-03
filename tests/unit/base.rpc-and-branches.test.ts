@@ -6,7 +6,7 @@ import axios from 'axios';
 import { BaseClient } from '../../src/core/base';
 import { createConfig } from '../../src/core/config';
 import * as ethers from 'ethers';
-import { JsonRpcProvider } from 'ethers';
+import { JsonRpcProvider, Contract } from 'ethers';
 
 const mockedAxios = { request: jest.fn() };
 
@@ -304,4 +304,135 @@ describe('BaseClient RPC and environment branches (real ethers)', () => {
         spy.mockRestore();
         warnSpy.mockRestore();
     });
+
+    it('_fetchEnvironments falls back to JsonRpcProvider when provider manager returns no primary subnet provider', async () => {
+        const client = new BaseClient(
+            createConfig({ parentEnv: 'fuji-multi', providerFailoverEnabled: true })
+        );
+        jest.spyOn(client._providerManager!, 'getProvider').mockReturnValueOnce(null as any);
+        mockedAxios.request.mockResolvedValue({
+            data: [
+                {
+                    chainid: 432204,
+                    env_type: 'subnet',
+                    env: 'prod-multi-subnet',
+                    native_token_symbol: 'ALOT',
+                    rpc: 'https://subnet.example/rpc',
+                    network: 'Dexalot L1',
+                },
+            ],
+        });
+        await client._fetchEnvironments();
+        expect(client.subnetProvider).toBeInstanceOf(JsonRpcProvider);
+        expect(client.provider).toBe(client.subnetProvider);
+    });
+
+    it('getChainIdToNameMap reads chain_id aliases and ignores empty ids', async () => {
+        const client = new BaseClient(createConfig());
+        jest.spyOn(client, 'getEnvironments').mockResolvedValue({
+            success: true,
+            data: [
+                { chain_id: '43114', network: 'Avalanche' },
+                { chainId: '', network: 'Ignore' },
+            ],
+        } as any);
+        const result = await client.getChains();
+        expect(result.success).toBe(true);
+        expect(result.data).toEqual({ 43114: 'Avalanche' });
+    });
+
+    it('getProviderForChain returns null for Dexalot L1 when no subnet provider is available', () => {
+        const client = new BaseClient(createConfig({ providerFailoverEnabled: false }));
+        client.subnetProvider = null as any;
+        expect(client.getProviderForChain('Dexalot L1')).toBeNull();
+    });
+
+    it('deployment helpers fall back to empty ABI arrays', () => {
+        const client = new BaseClient(createConfig());
+        client.deployments = {
+            TradePairs: { subnet: { address: '0x1', abi: null } },
+            PortfolioSub: { address: '0x2', abi: null },
+            PortfolioMain: { Avalanche: { address: '0x3', abi: null } },
+            MainnetRFQ: { Avalanche: { address: '0x4', abi: null } },
+        } as any;
+        expect((client as any)._tradePairsDeployment()).toEqual({ address: '0x1', abi: [] });
+        expect((client as any)._portfolioSubDeployment()).toEqual({ address: '0x2', abi: [] });
+        expect((client as any)._portfolioMainDeployment('Avalanche')).toEqual({ address: '0x3', abi: [] });
+        expect((client as any)._mainnetRfqDeployment('Avalanche')).toEqual({ address: '0x4', abi: [] });
+    });
+
+    it('_contractForSigner treats unsupported reconnect string errors as wallet-provider fallbacks', () => {
+        const wallet = ethers.Wallet.createRandom();
+        const signer = Object.create(wallet) as any;
+        Object.defineProperty(signer, 'provider', {
+            value: new JsonRpcProvider('http://127.0.0.1:65520'),
+            configurable: true,
+            enumerable: true,
+            writable: true,
+        });
+        signer.connect = jest.fn().mockImplementation(() => {
+            throw 'UNSUPPORTED_OPERATION: cannot reconnect';
+        });
+        const client = new BaseClient(signer);
+        const p = new JsonRpcProvider('http://127.0.0.1:65520');
+        const result = (client as any)._contractForSigner(p, '0x' + '1'.repeat(40), []);
+        expect(result).toBeInstanceOf(Contract);
+        expect((result as any).runner).toBe(signer);
+    });
+
+    it('withRpcFailover uses provider index fallback 0 when getProviderIndex returns undefined', async () => {
+        const client = new BaseClient(
+            createConfig({ parentEnv: 'fuji-multi', providerFailoverEnabled: true, retryEnabled: false })
+        );
+        const pm = client._providerManager!;
+        pm.addProviders('IdxFallback', ['http://127.0.0.1:65521']);
+        const markSpy = jest.spyOn(pm, 'markSuccess');
+        jest.spyOn(pm, 'getProviderIndex').mockReturnValue(undefined as any);
+        const result = await client.withRpcFailover('IdxFallback', async () => 'ok');
+        expect(result).toBe('ok');
+        expect(markSpy).toHaveBeenCalledWith('IdxFallback', 0);
+    });
+
+    it('_getRpcUrls falls back cleanly when global process is unavailable', () => {
+        const client = new BaseClient(createConfig());
+        const oldProcess = (global as any).process;
+        Object.defineProperty(global, 'process', { value: undefined, configurable: true });
+        try {
+            expect(client._getRpcUrls(1, 'AVAX', 'https://rpc.example')).toEqual(['https://rpc.example']);
+        } finally {
+            Object.defineProperty(global, 'process', { value: oldProcess, configurable: true });
+        }
+    });
+
+    it('getChains ignores NaN ids, handles undefined data, and falls back missing network names to empty strings', async () => {
+        const client = new BaseClient(createConfig());
+        jest.spyOn(client, 'getEnvironments').mockResolvedValue({
+            success: true,
+            data: [
+                { chainId: 'not-a-number', network: 'Ignore' },
+                { chainId: '1' },
+            ],
+        } as any);
+        const first = await client.getChains();
+        expect(first.success).toBe(true);
+        expect(first.data).toEqual({ 1: '' });
+
+        const clientNoData = new BaseClient(createConfig());
+        jest.spyOn(clientNoData, 'getEnvironments').mockResolvedValue({ success: true, data: undefined } as any);
+        const second = await clientNoData.getChains();
+        expect(second.success).toBe(true);
+        expect(second.data).toEqual({});
+    });
+
+    it('withRpcFailover runs directly against the subnet provider when no provider manager is configured', async () => {
+        const client = new BaseClient(createConfig({ providerFailoverEnabled: false, retryEnabled: false }));
+        const provider = new JsonRpcProvider('http://127.0.0.1:65522');
+        client.subnetProvider = provider;
+        const result = await client.withRpcFailover('Dexalot L1', async p => {
+            expect(p).toBe(provider);
+            return 'direct';
+        });
+        expect(result).toBe('direct');
+    });
+
 });
