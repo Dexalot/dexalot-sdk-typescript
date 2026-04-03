@@ -1,6 +1,7 @@
 import DexalotClientDefault, {
     DexalotClient,
     createConfig,
+    getLogger,
     getVersion,
     MemoryCache,
     Result,
@@ -23,6 +24,12 @@ describe('package entrypoints', () => {
     it('exports Result and MemoryCache', () => {
         expect(Result.ok(1).success).toBe(true);
         expect(new MemoryCache(1000)).toBeDefined();
+    });
+
+    it('exports getLogger same as internal', () => {
+        expect(getLogger).toBe(internal.getLogger);
+        const log = getLogger('test');
+        expect(typeof log.info).toBe('function');
     });
 
     it('secrets vault key helper returns non-empty string', () => {
