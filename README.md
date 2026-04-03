@@ -63,8 +63,9 @@ pnpm run build
 
 ## Package exports
 
-- **`dexalot-sdk`**: Default export `DexalotClient`, plus `DexalotConfig` (type), `createConfig`, `loadConfigFromEnv`, `MemoryCache`, `Result`, secrets vault helpers, `version`, and `getVersion()`.
-- **`dexalot-sdk/internal`**: `BaseClient`, `CLOBClient`, `SwapClient`, `TransferClient`, `Utils`, types, constants, and the rest of the implementation surface for advanced use.
+- **`dexalot-sdk`**: Default export `DexalotClient`, plus `DexalotConfig` (type), `createConfig`, `loadConfigFromEnv`, `MemoryCache`, `Result`, `getLogger` / `Logger`, `version`, and `getVersion()`.
+- **`dexalot-sdk/secrets-vault`**: `generateSecretsVaultKey`, `secretsVaultGet` / `Set` / `List` / `Remove`.
+- **`dexalot-sdk/internal`**: `BaseClient`, `CLOBClient`, `SwapClient`, `TransferClient`, `Utils`, types, constants, and the rest of the implementation surface for advanced use (excludes the secrets vault; use the subpath above).
 
 Call `await client.initializeClient()` before trading RPC/API usage, optionally `await client.connect()`, and `await client.close()` when tearing down. Successful on-chain `Result` payloads use camelCase fields such as `txHash`, `operation`, and batch id lists where applicable.
 

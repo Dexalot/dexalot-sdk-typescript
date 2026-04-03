@@ -5,10 +5,10 @@ import DexalotClientDefault, {
     getVersion,
     MemoryCache,
     Result,
-    generateSecretsVaultKey,
     version,
 } from '../../src/index';
 import * as internal from '../../src/internal';
+import { generateSecretsVaultKey } from '../../src/secrets-vault';
 import { OrderSide, OrderType, OrderStatus } from '../../src/types/index';
 
 describe('package entrypoints', () => {
@@ -32,9 +32,13 @@ describe('package entrypoints', () => {
         expect(typeof log.info).toBe('function');
     });
 
-    it('secrets vault key helper returns non-empty string', () => {
+    it('secrets-vault subpath exports key helper', () => {
         expect(typeof generateSecretsVaultKey()).toBe('string');
         expect(generateSecretsVaultKey().length).toBeGreaterThan(10);
+    });
+
+    it('internal barrel does not pull secrets vault (browser-safe surface)', () => {
+        expect((internal as Record<string, unknown>).generateSecretsVaultKey).toBeUndefined();
     });
 
     it('internal barrel exposes clients and config', () => {

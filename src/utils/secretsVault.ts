@@ -6,7 +6,7 @@
  *
  * The vault file is created with owner-only permissions (0o600).
  *
- * Typical usage:
+ * Import from `dexalot-sdk/secrets-vault` (Node only). Typical usage:
  *   const key = generateSecretsVaultKey();
  *   secretsVaultSet('~/.dexalot/secrets_vault.db', 'PRIVATE_KEY', '0x...', key);
  *   const result = secretsVaultGet('~/.dexalot/secrets_vault.db', 'PRIVATE_KEY', key);

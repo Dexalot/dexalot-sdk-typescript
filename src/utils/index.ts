@@ -10,8 +10,6 @@ export { WebSocketManager, type WebSocketConfig, type ConnectionState, type Mess
 export * from './observability.js';
 export { normalizeTokenSymbol, normalizeTradingPair } from './tokenNormalization.js';
 export { ChainResolver, normalizeChainAlias, inferChainFamily, inferEnvironmentKind, type ResolvedChain } from './chainResolver.js';
-export { generateSecretsVaultKey, secretsVaultGet, secretsVaultSet, secretsVaultList, secretsVaultRemove } from './secretsVault.js';
-import { ethers } from "ethers";
 import { formatUnits, parseUnits, encodeBytes32String, decodeBytes32String } from "ethers";
 
 export class Utils {
