@@ -39,7 +39,7 @@ describe('Integration: Replace Order', () => {
         const orders = ordersResult.data!;
         expect(orders.length).toBe(1);
         expect(parseFloat(String(orders[0].quantity))).toBe(0.5);
-        const orderId = orders[0].id;
+        const orderId = orders[0].internalOrderId;
         console.log('Placed initial order');
         
         // Replace order using replaceOrder (cancelReplaceOrder contract call)

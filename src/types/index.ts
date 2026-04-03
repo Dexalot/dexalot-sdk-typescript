@@ -40,19 +40,24 @@ export interface OrderRequest {
 }
 
 export interface Order {
-  id: string; // bytes32 hex
+  internalOrderId: string; // bytes32 hex
   clientOrderId: string; // bytes32 hex
   tradePairId: string; // bytes32 hex
+  pair: string;
   price: number; // Display units
+  totalAmount: number; // Display units
   quantity: number; // Display units
-  filledQuantity: number; // Display units
-  status: OrderStatus | number;
-  side: 'BUY' | 'SELL' | 0 | 1; // 0=BUY, 1=SELL (API returns numbers)
-  type: 'MARKET' | 'LIMIT' | 0 | 1; // 0=MARKET, 1=LIMIT (API returns numbers)
-  pair?: string;
-  txHash?: string;
-  totalFee?: number;
-  totalAmount?: number;
+  quantityFilled: number; // Display units
+  totalFee: number; // Display units
+  traderAddress: string;
+  side: 'BUY' | 'SELL' | string;
+  type1: 'MARKET' | 'LIMIT' | 'STOP' | 'STOPLIMIT' | string;
+  type2: 'GTC' | 'FOK' | 'IOC' | 'PO' | string;
+  status: 'NEW' | 'REJECTED' | 'PARTIAL' | 'FILLED' | 'CANCELED' | 'EXPIRED' | 'KILLED' | string;
+  updateBlock: number;
+  createBlock: number;
+  createTs: string | null;
+  updateTs: string | null;
 }
 
 export interface OrderBookEntry {

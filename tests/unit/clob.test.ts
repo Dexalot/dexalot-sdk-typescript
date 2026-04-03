@@ -26,6 +26,60 @@ function utf8ToOrderBytes32Hex(s: string): string {
     return ethers.hexlify(paddedArr);
 }
 
+function makeContractOrderRow(overrides: Partial<{
+    internalOrderId: string;
+    clientOrderId: string;
+    tradePairId: string;
+    price: bigint;
+    totalAmount: bigint;
+    quantity: bigint;
+    quantityFilled: bigint;
+    totalFee: bigint;
+    traderAddress: string;
+    side: number;
+    type1: number;
+    type2: number;
+    status: number;
+    updateBlock: number;
+    createBlock: number;
+}> = {}): any[] {
+    const row = {
+        internalOrderId: '0x' + '1'.repeat(64),
+        clientOrderId: '0x' + '2'.repeat(64),
+        tradePairId: '0xPairId_AVAX_USDC',
+        price: 100n,
+        totalAmount: 0n,
+        quantity: 10n,
+        quantityFilled: 5n,
+        totalFee: 0n,
+        traderAddress: '0xUserAddress',
+        side: 0,
+        type1: 1,
+        type2: 0,
+        status: 1,
+        updateBlock: 101,
+        createBlock: 100,
+        ...overrides,
+    };
+    return [
+        row.internalOrderId,
+        row.clientOrderId,
+        row.tradePairId,
+        row.price,
+        row.totalAmount,
+        row.quantity,
+        row.quantityFilled,
+        row.totalFee,
+        row.traderAddress,
+        row.side,
+        row.type1,
+        row.type2,
+        row.status,
+        row.updateBlock,
+        row.createBlock,
+    ];
+}
+
 class TestClient extends CLOBClient {}
 
 describe('CLOBClient', () => {
@@ -102,21 +156,11 @@ describe('CLOBClient', () => {
         mockContract.cancelAddList.estimateGas = jest.fn().mockResolvedValue(100000n);
         mockContract.cancelOrderByClientId.estimateGas = jest.fn().mockResolvedValue(100000n);
 
-        const defaultContractOrderRow = [
-            VALID_ORDER_ID,
-            VALID_CLIENT_ID,
-            '0xPairId_AVAX_USDC',
-            100n,
-            0,
-            10n,
-            5n,
-            0,
-            0,
-            0,
-            1,
-            0,
-            1,
-        ];
+        const defaultContractOrderRow = makeContractOrderRow({
+            internalOrderId: VALID_ORDER_ID,
+            clientOrderId: VALID_CLIENT_ID,
+            traderAddress: mockAddress,
+        });
         mockContract.getOrder.mockResolvedValue(defaultContractOrderRow);
 
         // Utils Mocks
@@ -374,12 +418,53 @@ describe('CLOBClient', () => {
 
     describe('cancelAllOrders', () => {
          it('should fetch open orders and cancel list', async () => {
-             // Mock getOpenOrders internally or via axios mock?
-             // Calling getOpenOrders internally triggers axios.
-             // Mock axios response for open orders
-             mockAxios.request.mockResolvedValue({ data: { rows: [{ id: '0x1' }, { id: '0x2' }] } });
+             jest.spyOn(client, 'getOpenOrders').mockResolvedValue({
+                 success: true,
+                 data: [
+                     {
+                         internalOrderId: '0x1',
+                         clientOrderId: '0x' + '3'.repeat(64),
+                         tradePairId: '0xPairId_AVAX_USDC',
+                         pair: 'AVAX/USDC',
+                         price: 10,
+                         totalAmount: 10,
+                         quantity: 1,
+                         quantityFilled: 0,
+                         totalFee: 0,
+                         traderAddress: mockAddress,
+                         side: 'BUY',
+                         type1: 'LIMIT',
+                         type2: 'GTC',
+                         status: 'NEW',
+                         updateBlock: 101,
+                         createBlock: 100,
+                         createTs: null,
+                         updateTs: null,
+                     },
+                     {
+                         internalOrderId: '0x2',
+                         clientOrderId: '0x' + '4'.repeat(64),
+                         tradePairId: '0xPairId_AVAX_USDC',
+                         pair: 'AVAX/USDC',
+                         price: 10,
+                         totalAmount: 10,
+                         quantity: 1,
+                         quantityFilled: 0,
+                         totalFee: 0,
+                         traderAddress: mockAddress,
+                         side: 'SELL',
+                         type1: 'LIMIT',
+                         type2: 'GTC',
+                         status: 'NEW',
+                         updateBlock: 102,
+                         createBlock: 101,
+                         createTs: null,
+                         updateTs: null,
+                     },
+                 ],
+                 error: null,
+             } as any);
              
-             // Mock cancelListOrders
              jest.spyOn(client, 'cancelListOrders').mockResolvedValue({ success: true, data: {}, error: null } as any);
 
              const result = await client.cancelAllOrders();
@@ -481,15 +566,21 @@ describe('CLOBClient', () => {
                           id: '0x123',
                           clientordid: '0xabc',
                           tradepairid: '0xdef',
-                          price: 100,
-                          quantity: 1.5,
-                          filledquantity: 0.5,
-                          status: 0,
+                          price: '100',
+                          quantity: '1.5',
+                          quantityfilled: '0.5',
+                          status: 3,
                           side: 0,
                           type: 1,
+                          type2: 0,
                           pair: 'AVAX/USDC',
-                          totalamount: 150,
-                          totalfee: 0.1
+                          totalamount: '150',
+                          totalfee: '0.1',
+                          traderaddress: mockAddress,
+                          createBlock: 100,
+                          updateBlock: 101,
+                          timestamp: '2024-01-01T00:00:00.000Z',
+                          update_ts: '2024-01-01T00:01:00.000Z'
                       }]
                   } 
               });
@@ -497,18 +588,24 @@ describe('CLOBClient', () => {
               expect(result.success).toBe(true);
               expect(result.data).toHaveLength(1);
               expect(result.data![0]).toMatchObject({
-                  id: '0x123',
+                  internalOrderId: '0x123',
                   clientOrderId: '0xabc',
                   tradePairId: '0xdef',
                   price: 100,
-                  quantity: 1.5,
-                  filledQuantity: 0.5,
-                  status: 0,
-                  side: 0,
-                  type: 1,
-                  pair: 'AVAX/USDC',
                   totalAmount: 150,
-                  totalFee: 0.1
+                  quantity: 1.5,
+                  quantityFilled: 0.5,
+                  totalFee: 0.1,
+                  traderAddress: mockAddress,
+                  status: 'FILLED',
+                  side: 'BUY',
+                  type1: 'LIMIT',
+                  type2: 'GTC',
+                  pair: 'AVAX/USDC',
+                  createBlock: 100,
+                  updateBlock: 101,
+                  createTs: '2024-01-01T00:00:00.000Z',
+                  updateTs: '2024-01-01T00:01:00.000Z'
               });
          });
 
@@ -578,7 +675,7 @@ describe('CLOBClient', () => {
 
         it('should return formatted order if found directly', async () => {
              // Mock formatted data [id, clientOrderId...]
-             const mockData = [VALID_ORDER_ID, VALID_CLIENT_ID, '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1]; 
+             const mockData = makeContractOrderRow({ internalOrderId: VALID_ORDER_ID, clientOrderId: VALID_CLIENT_ID, traderAddress: mockAddress }); 
              mockContract.getOrder.mockResolvedValue(mockData); 
              
              const result = await client.getOrder(VALID_ORDER_ID);
@@ -589,7 +686,7 @@ describe('CLOBClient', () => {
 
         it('should handle uppercase ID (DataHexString coverage)', async () => {
              const upperId = VALID_ORDER_ID.toUpperCase();
-             const mockData = [VALID_ORDER_ID, VALID_CLIENT_ID, '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1]; 
+             const mockData = makeContractOrderRow({ internalOrderId: VALID_ORDER_ID, clientOrderId: VALID_CLIENT_ID, traderAddress: mockAddress }); 
              
              // Mock needs to match lowercased call or we assume getOrder handles it
              // clob.ts says: orderIdBytes = orderId.startsWith('0x') ? orderId : ...
@@ -604,12 +701,12 @@ describe('CLOBClient', () => {
 
          it('should parse SELL/MARKET correctly', async () => {
              // 9=Side(1=SELL), 10=Type(0=MARKET)
-             const mockData = [VALID_ORDER_ID, VALID_CLIENT_ID, '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 1, 0, 0, 1]; 
+             const mockData = makeContractOrderRow({ internalOrderId: VALID_ORDER_ID, clientOrderId: VALID_CLIENT_ID, traderAddress: mockAddress, side: 1, type1: 0 }); 
              mockContract.getOrder.mockResolvedValue(mockData);
              const result = await client.getOrder(VALID_ORDER_ID);
              expect(result.success).toBe(true);
              expect(result.data!.side).toBe('SELL');
-             expect(result.data!.type).toBe('MARKET');
+             expect(result.data!.type1).toBe('MARKET');
          });
 
         it('should fallback to Client ID if main ID not found', async () => {
@@ -617,7 +714,7 @@ describe('CLOBClient', () => {
              const nullData = ["0x" + "0".repeat(64)];
              mockContract.getOrder.mockResolvedValue(nullData);
              
-             const validData = [VALID_ORDER_ID, VALID_CLIENT_ID, '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+             const validData = makeContractOrderRow({ internalOrderId: VALID_ORDER_ID, clientOrderId: VALID_CLIENT_ID, traderAddress: mockAddress });
              mockContract.getOrderByClientOrderId.mockResolvedValue(nullData);
              mockContract.getOrderByClientId.mockResolvedValue(validData);
              
@@ -662,7 +759,7 @@ describe('CLOBClient', () => {
     
     describe('getOrderByClientId', () => {
          it('should return formatted order', async () => {
-             const mockData = [VALID_ORDER_ID, VALID_CLIENT_ID, '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+             const mockData = makeContractOrderRow({ internalOrderId: VALID_ORDER_ID, clientOrderId: VALID_CLIENT_ID, traderAddress: mockAddress });
              mockContract.getOrderByClientOrderId.mockResolvedValue(mockData);
              const result = await client.getOrderByClientId('client-id');
              expect(result.success).toBe(true);
@@ -799,7 +896,7 @@ describe('CLOBClient', () => {
      describe('replaceOrder', () => {
           it('should replace order using existing pair info', async () => {
                // Mock getOrder to return valid pair
-               const mockData = [VALID_ORDER_ID, VALID_CLIENT_ID, '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+               const mockData = makeContractOrderRow({ internalOrderId: VALID_ORDER_ID, clientOrderId: VALID_CLIENT_ID, traderAddress: mockAddress });
                mockContract.getOrder.mockResolvedValue(mockData);
                
                const result = await client.replaceOrder(VALID_ORDER_ID, 21, 11);
@@ -809,13 +906,13 @@ describe('CLOBClient', () => {
           
           it('should return error if pair unknown in internal lookup', async () => {
                // Return ID that doesn't match known pair
-               const mockData = [VALID_ORDER_ID, VALID_CLIENT_ID, '0xPairId_UNKNOWN', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+               const mockData = makeContractOrderRow({ internalOrderId: VALID_ORDER_ID, clientOrderId: VALID_CLIENT_ID, tradePairId: '0xPairId_UNKNOWN', traderAddress: mockAddress });
                mockContract.getOrder.mockResolvedValue(mockData);
                mockAxios.request.mockResolvedValue({ data: [] }); // Fetch fails to find it too
                
                const result = await client.replaceOrder(VALID_ORDER_ID, 21, 11);
                expect(result.success).toBe(false);
-               expect(result.error).toContain('Pair data not found for order');
+               expect(result.error).toContain('Could not determine pair from order data');
           });
 
           it('should return error for invalid orderId format in replaceOrder', async () => {
@@ -848,7 +945,7 @@ describe('CLOBClient', () => {
           });
 
           it('should handle contract error in replaceOrder', async () => {
-               const mockData = [VALID_ORDER_ID, VALID_CLIENT_ID, '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+               const mockData = makeContractOrderRow({ internalOrderId: VALID_ORDER_ID, clientOrderId: VALID_CLIENT_ID, traderAddress: mockAddress });
                mockContract.getOrder.mockResolvedValue(mockData);
                mockContract.cancelReplaceOrder.estimateGas.mockRejectedValue(new Error("Contract error"));
                
@@ -880,7 +977,7 @@ describe('CLOBClient', () => {
 
            it('cancelAddList should fetch order details when side/pair not provided', async () => {
                 // Mock getOrder to return order details
-                const mockData = [VALID_ORDER_ID, VALID_CLIENT_ID, '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+                const mockData = makeContractOrderRow({ internalOrderId: VALID_ORDER_ID, clientOrderId: VALID_CLIENT_ID, traderAddress: mockAddress });
                 mockContract.getOrder.mockResolvedValue(mockData);
                 
                 // Replacement without side or pair - should trigger getOrder call
@@ -906,7 +1003,7 @@ describe('CLOBClient', () => {
            });
 
            it('cancelAddList should handle contract error', async () => {
-                const mockData = [VALID_ORDER_ID, VALID_CLIENT_ID, '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+                const mockData = makeContractOrderRow({ internalOrderId: VALID_ORDER_ID, clientOrderId: VALID_CLIENT_ID, traderAddress: mockAddress });
                 mockContract.getOrder.mockResolvedValue(mockData);
                 mockContract.cancelAddList.estimateGas.mockRejectedValue(new Error("Contract error"));
                 
@@ -919,14 +1016,32 @@ describe('CLOBClient', () => {
 
            it('cancelAddList should default to AVAX/USDC when pair is missing', async () => {
                 // Mock getOrder to return order without pair
-                const mockData = [VALID_ORDER_ID, VALID_CLIENT_ID, '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+                const mockData = makeContractOrderRow({ internalOrderId: VALID_ORDER_ID, clientOrderId: VALID_CLIENT_ID, traderAddress: mockAddress });
                 mockContract.getOrder.mockResolvedValue(mockData);
                 // Mock _formatOrderData to return order without pair
                 jest.spyOn(client as any, '_formatOrderData').mockResolvedValue({
-                    id: VALID_ORDER_ID,
-                    clientOrderId: VALID_CLIENT_ID,
-                    side: 'BUY',
-                    // pair is missing/falsy
+                    success: true,
+                    data: {
+                        internalOrderId: VALID_ORDER_ID,
+                        clientOrderId: VALID_CLIENT_ID,
+                        tradePairId: '0xPairId_AVAX_USDC',
+                        pair: '',
+                        price: 10,
+                        totalAmount: 10,
+                        quantity: 10,
+                        quantityFilled: 0,
+                        totalFee: 0,
+                        traderAddress: mockAddress,
+                        side: 'BUY',
+                        type1: 'LIMIT',
+                        type2: 'GTC',
+                        status: 'NEW',
+                        updateBlock: 101,
+                        createBlock: 100,
+                        createTs: null,
+                        updateTs: null,
+                    },
+                    error: null,
                 });
                 
                 const reps = [{ order_id: VALID_ORDER_ID, side: 'BUY', price: 10, amount: 10 }];
@@ -1026,7 +1141,7 @@ describe('CLOBClient', () => {
 
     describe('Branch Coverage - Non-hex IDs and Fallbacks', () => {
         it('getOrder should convert non-hex orderId', async () => {
-            const mockData = [VALID_ORDER_ID, VALID_CLIENT_ID, '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+            const mockData = makeContractOrderRow({ internalOrderId: VALID_ORDER_ID, clientOrderId: VALID_CLIENT_ID, traderAddress: mockAddress });
             mockContract.getOrderByClientOrderId.mockResolvedValue(mockData);
 
             await client.getOrder('plain-order-id');
@@ -1037,7 +1152,7 @@ describe('CLOBClient', () => {
         });
 
         it('getOrderByClientId should handle hex clientOrderId directly', async () => {
-            const mockData = [VALID_ORDER_ID, VALID_CLIENT_ID, '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+            const mockData = makeContractOrderRow({ internalOrderId: VALID_ORDER_ID, clientOrderId: VALID_CLIENT_ID, traderAddress: mockAddress });
             mockContract.getOrderByClientOrderId.mockResolvedValue(mockData);
 
             const spy = jest.spyOn(Utils, 'toBytes32');
@@ -1050,7 +1165,7 @@ describe('CLOBClient', () => {
         });
 
         it('getOrderByClientId should convert non-hex clientOrderId', async () => {
-            const mockData = [VALID_ORDER_ID, VALID_CLIENT_ID, '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+            const mockData = makeContractOrderRow({ internalOrderId: VALID_ORDER_ID, clientOrderId: VALID_CLIENT_ID, traderAddress: mockAddress });
             mockContract.getOrderByClientOrderId.mockResolvedValue(mockData);
 
             await client.getOrderByClientId('plain-client-id');
@@ -1069,7 +1184,7 @@ describe('CLOBClient', () => {
         });
 
         it('replaceOrder should convert non-hex orderId', async () => {
-            const mockData = [VALID_ORDER_ID, VALID_CLIENT_ID, '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+            const mockData = makeContractOrderRow({ internalOrderId: VALID_ORDER_ID, clientOrderId: VALID_CLIENT_ID, traderAddress: mockAddress });
             mockContract.getOrderByClientOrderId.mockResolvedValue(mockData);
 
             await client.replaceOrder('plain-order-id', 21, 11);
@@ -1101,10 +1216,24 @@ describe('CLOBClient', () => {
             jest.spyOn(client, 'getOrder').mockResolvedValue({
                 success: true,
                 data: {
-                    id: VALID_ORDER_ID,
+                    internalOrderId: VALID_ORDER_ID,
                     clientOrderId: VALID_CLIENT_ID,
-                    side: 'BUY',
+                    tradePairId: '0xPairId_AVAX_USDC',
                     pair: 'AVAX/USDC',
+                    price: 10,
+                    totalAmount: 10,
+                    quantity: 10,
+                    quantityFilled: 0,
+                    totalFee: 0,
+                    traderAddress: mockAddress,
+                    side: 'BUY',
+                    type1: 'LIMIT',
+                    type2: 'GTC',
+                    status: 'NEW',
+                    updateBlock: 101,
+                    createBlock: 100,
+                    createTs: null,
+                    updateTs: null,
                 },
                 error: null,
             } as any);
@@ -1177,7 +1306,7 @@ describe('CLOBClient', () => {
         });
 
         it('should not wait for receipt when waitForReceipt=false in replaceOrder', async () => {
-            const mockData = [VALID_ORDER_ID, VALID_CLIENT_ID, '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+            const mockData = makeContractOrderRow({ internalOrderId: VALID_ORDER_ID, clientOrderId: VALID_CLIENT_ID, traderAddress: mockAddress });
             mockContract.getOrder.mockResolvedValue(mockData);
             const tx = { hash: '0xReplaceHash' };
             mockContract.cancelReplaceOrder.mockResolvedValue(tx);
@@ -1300,7 +1429,7 @@ describe('CLOBClient', () => {
         });
 
         it('should return error when receipt status is not 1 in replaceOrder', async () => {
-            const mockData = [VALID_ORDER_ID, VALID_CLIENT_ID, '0xPairId_AVAX_USDC', 100n, 0, 10n, 5n, 0, 0, 0, 1, 0, 1];
+            const mockData = makeContractOrderRow({ internalOrderId: VALID_ORDER_ID, clientOrderId: VALID_CLIENT_ID, traderAddress: mockAddress });
             mockContract.getOrder.mockResolvedValue(mockData);
             const tx = {
                 hash: '0xReplaceHash',
@@ -1681,21 +1810,7 @@ describe('CLOBClient', () => {
         });
 
         it('replaceOrder fails when TradePairs missing after getOrder succeeds', async () => {
-            const mockData = [
-                VALID_ORDER_ID,
-                VALID_CLIENT_ID,
-                '0xPairId_AVAX_USDC',
-                100n,
-                0,
-                10n,
-                5n,
-                0,
-                0,
-                0,
-                1,
-                0,
-                1,
-            ];
+            const mockData = makeContractOrderRow({ internalOrderId: VALID_ORDER_ID, clientOrderId: VALID_CLIENT_ID, traderAddress: mockAddress });
             mockContract.getOrder.mockResolvedValue(mockData);
             const orig = (client as any)._tradePairsDeployment.bind(client);
             let n = 0;

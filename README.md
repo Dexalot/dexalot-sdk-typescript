@@ -853,6 +853,17 @@ if (result.success) {
 }
 ```
 
+### Canonical Order Model
+
+Order reads (`getOpenOrders`, `getOrder`, `getOrderByClientId`) return one canonical order object regardless of whether the source was the REST API or the contract:
+
+- `internalOrderId`, `clientOrderId`, `tradePairId`, `pair`
+- `price`, `totalAmount`, `quantity`, `quantityFilled`, `totalFee`
+- `traderAddress`, `side`, `type1`, `type2`, `status`
+- `updateBlock`, `createBlock`, `createTs`, `updateTs`
+
+Enum-style fields are normalized to human-readable strings such as `BUY`, `SELL`, `LIMIT`, `GTC`, and `FILLED`. `createBlock` and `updateBlock` are returned as JavaScript numbers, not hex strings.
+
 ## API Field Name Standardization
 
 The SDK automatically standardizes API response field names to match TypeScript naming conventions (camelCase). This ensures consistent field names regardless of API response format variations.
@@ -860,8 +871,14 @@ The SDK automatically standardizes API response field names to match TypeScript 
 ### Standardized Fields
 
 **Orders API:**
+- `internalOrderId` (from `id`)
 - `clientOrderId` (from `clientordid`, `client_order_id`)
-- `tradePairId`, `filledQuantity`, `totalAmount`, `totalFee`, `txHash`
+- `tradePairId` (from `tradePairId`, `tradepairid`, `trade_pair_id`, or derived from `pair`)
+- `pair`, `price`, `quantity`, `quantityFilled`, `totalAmount`, `totalFee`
+- `traderAddress`, `side`, `type1`, `type2`, `status`
+- `createBlock`, `updateBlock`, `createTs`, `updateTs`
+
+Orders are normalized into one canonical SDK shape across REST and contract order reads.
 
 **Environments API:**
 - `chainId` (from `chainid`, `chain_id`)

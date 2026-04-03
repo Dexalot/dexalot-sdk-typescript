@@ -58,6 +58,158 @@ export class CLOBClient extends BaseClient {
             return transformed;
         }
 
+        private _coerceOrderNumeric(value: unknown, fieldName: string): number {
+            if (value === null || value === undefined || value === '') {
+                return 0;
+            }
+            if (typeof value === 'number') {
+                if (!Number.isFinite(value)) {
+                    throw new Error(`Order field '${fieldName}' must be numeric.`);
+                }
+                return value;
+            }
+            if (typeof value === 'bigint') {
+                return Number(value);
+            }
+            if (typeof value === 'string') {
+                const raw = value.trim();
+                if (!raw) {
+                    return 0;
+                }
+                const parsed = Number(raw);
+                if (!Number.isFinite(parsed)) {
+                    throw new Error(`Order field '${fieldName}' must be numeric.`);
+                }
+                return parsed;
+            }
+            const parsed = Number(value);
+            if (!Number.isFinite(parsed)) {
+                throw new Error(`Order field '${fieldName}' must be numeric.`);
+            }
+            return parsed;
+        }
+
+        private _coerceOrderBlock(value: unknown, fieldName: string): number {
+            if (value === null || value === undefined) {
+                throw new Error(`Order missing required '${fieldName}' field.`);
+            }
+            if (typeof value === 'boolean') {
+                throw new Error(`Order field '${fieldName}' must be an integer block number.`);
+            }
+            if (typeof value === 'number') {
+                if (!Number.isInteger(value)) {
+                    throw new Error(`Order field '${fieldName}' must be an integer block number.`);
+                }
+                return value;
+            }
+            if (typeof value === 'bigint') {
+                return Number(value);
+            }
+            if (typeof value === 'string') {
+                const raw = value.trim();
+                if (!raw) {
+                    throw new Error(`Order missing required '${fieldName}' field.`);
+                }
+                const parsed = Number.parseInt(raw, raw.startsWith('0x') ? 16 : 10);
+                if (!Number.isInteger(parsed)) {
+                    throw new Error(`Order field '${fieldName}' must be an integer block number.`);
+                }
+                return parsed;
+            }
+            const parsed = Number(value);
+            if (!Number.isInteger(parsed)) {
+                throw new Error(`Order field '${fieldName}' must be an integer block number.`);
+            }
+            return parsed;
+        }
+
+        private _enumToName(value: unknown, mapping: Record<number, string>): unknown {
+            if (typeof value === 'bigint') {
+                return mapping[Number(value)] ?? Number(value);
+            }
+            if (typeof value === 'number') {
+                return mapping[value] ?? value;
+            }
+            return value;
+        }
+
+        private _toHexIdentifier(value: unknown): string {
+            if (typeof value === 'string') {
+                return value;
+            }
+            if (value instanceof Uint8Array) {
+                return ethers.hexlify(value);
+            }
+            if (typeof value === 'bigint') {
+                return ethers.toBeHex(value, 32);
+            }
+            return this._slotToBytes32Hex(value);
+        }
+
+        private _findPairInfoByTradePairId(tradePairId: string | undefined): Pair | undefined {
+            if (!tradePairId) {
+                return undefined;
+            }
+            return Object.values(this.pairs).find(
+                (pair) => DataHexString(String(pair.tradePairId)) === DataHexString(String(tradePairId))
+            );
+        }
+
+        private _resolvePairFromOrder(order: any): string | undefined {
+            const pair = order.pair ?? order.tradePair ?? order.trade_pair;
+            return typeof pair === 'string' ? pair : undefined;
+        }
+
+        private _resolveTradePairIdFromPair(pair: string | undefined): string | undefined {
+            if (!pair) {
+                return undefined;
+            }
+            const pairData = this.pairs[pair];
+            return pairData ? this._toHexIdentifier(pairData.tradePairId) : undefined;
+        }
+
+        private _buildCanonicalOrder(params: {
+            internalOrderId: string;
+            clientOrderId: string;
+            tradePairId: string;
+            pair: string;
+            price: number;
+            totalAmount: number;
+            quantity: number;
+            quantityFilled: number;
+            totalFee: number;
+            traderAddress: string;
+            side: string;
+            type1: string;
+            type2: string;
+            status: string;
+            updateBlock: number;
+            createBlock: number;
+            createTs?: string | null;
+            updateTs?: string | null;
+        }): Order {
+            return {
+                internalOrderId: params.internalOrderId,
+                clientOrderId: params.clientOrderId,
+                tradePairId: params.tradePairId,
+                pair: params.pair,
+                price: params.price,
+                totalAmount: params.totalAmount,
+                quantity: params.quantity,
+                quantityFilled: params.quantityFilled,
+                totalFee: params.totalFee,
+                traderAddress: params.traderAddress,
+                side: params.side,
+                type1: params.type1,
+                type2: params.type2,
+                status: params.status,
+                updateBlock: params.updateBlock,
+                createBlock: params.createBlock,
+                createTs: params.createTs ?? null,
+                updateTs: params.updateTs ?? null,
+            };
+        }
+
         /**
          * Fetch and store trading pair metadata.
          * Cached for 15 minutes (semi-static data).
@@ -606,7 +758,7 @@ export class CLOBClient extends BaseClient {
                 return Result.fail('No open orders to cancel.');
             }
             
-            const ids = openOrders.map(o => o.id);
+            const ids = openOrders.map(o => o.internalOrderId);
             return await this.cancelListOrders(ids);
         }
 
@@ -654,21 +806,57 @@ export class CLOBClient extends BaseClient {
          * Maps lowercase/snake_case API fields to camelCase SDK fields.
          */
         private _transformOrderFromAPI(order: any): Order {
-            return {
-                id: order.id,
-                clientOrderId: order.clientOrderId || order.clientordid || order.client_order_id,
-                tradePairId: order.tradePairId || order.tradepairid || order.trade_pair_id,
-                price: order.price,
-                quantity: order.quantity,
-                filledQuantity: order.filledQuantity || order.filledquantity || order.filled_quantity || 0,
-                status: order.status,
-                side: order.side,
-                type: order.type,
-                pair: order.pair,
-                txHash: order.txHash || order.txhash || order.tx_hash,
-                totalFee: order.totalFee || order.totalfee || order.total_fee,
-                totalAmount: order.totalAmount || order.totalamount || order.total_amount,
-            } as Order;
+            const side = this._enumToName(order.side, { 0: 'BUY', 1: 'SELL' });
+            const type1 = this._enumToName(order.type1 ?? order.type, {
+                0: 'MARKET',
+                1: 'LIMIT',
+                2: 'STOP',
+                3: 'STOPLIMIT',
+            });
+            const type2 = this._enumToName(order.type2, { 0: 'GTC', 1: 'FOK', 2: 'IOC', 3: 'PO' });
+            const status = this._enumToName(order.status, {
+                0: 'NEW',
+                1: 'REJECTED',
+                2: 'PARTIAL',
+                3: 'FILLED',
+                4: 'CANCELED',
+                5: 'EXPIRED',
+                6: 'KILLED',
+            });
+            const pair = this._resolvePairFromOrder(order) ?? this._findPairInfoByTradePairId(order.tradePairId)?.pair;
+            const tradePairId = this._toHexIdentifier(
+                order.tradePairId ?? order.tradepairid ?? order.trade_pair_id ?? this._resolveTradePairIdFromPair(pair)
+            );
+            if (!pair) {
+                throw new Error('Could not determine pair from order data.');
+            }
+
+            return this._buildCanonicalOrder({
+                internalOrderId: this._toHexIdentifier(order.internalOrderId ?? order.id),
+                clientOrderId: this._toHexIdentifier(order.clientOrderId ?? order.clientordid ?? order.client_order_id),
+                tradePairId,
+                pair,
+                price: this._coerceOrderNumeric(order.price, 'price'),
+                totalAmount: this._coerceOrderNumeric(
+                    order.totalAmount ?? order.totalamount ?? order.total_amount,
+                    'totalAmount'
+                ),
+                quantity: this._coerceOrderNumeric(order.quantity, 'quantity'),
+                quantityFilled: this._coerceOrderNumeric(
+                    order.quantityFilled ?? order.quantityfilled ?? order.filledQuantity ?? order.filled_quantity,
+                    'quantityFilled'
+                ),
+                totalFee: this._coerceOrderNumeric(order.totalFee ?? order.totalfee ?? order.total_fee, 'totalFee'),
+                traderAddress: String(order.traderAddress ?? order.traderaddress ?? ''),
+                side: String(side),
+                type1: String(type1),
+                type2: String(type2),
+                status: String(status),
+                updateBlock: this._coerceOrderBlock(order.updateBlock ?? order.update_block, 'updateBlock'),
+                createBlock: this._coerceOrderBlock(order.createBlock ?? order.create_block, 'createBlock'),
+                createTs: order.createTs ?? order.create_ts ?? order.timestamp ?? order.ts ?? null,
+                updateTs: order.updateTs ?? order.update_ts ?? order.updatets ?? null,
+            });
         }
 
         public async getOpenOrders(pair?: string): Promise<Result<Order[]>> {
@@ -699,7 +887,17 @@ export class CLOBClient extends BaseClient {
                     orders = [data];
                 }
 
-                // Transform API field names to match Order interface
+                if (orders.some((order) => {
+                    const pair = this._resolvePairFromOrder(order);
+                    const tradePairId = order.tradePairId ?? order.tradepairid ?? order.trade_pair_id;
+                    return !pair || !tradePairId;
+                })) {
+                    const pairsResult = await this.getClobPairs();
+                    if (!pairsResult.success) {
+                        return Result.fail(pairsResult.error!);
+                    }
+                }
+
                 const transformedOrders = orders.map(order => this._transformOrderFromAPI(order));
                 return Result.ok(transformedOrders);
             } catch (e) {
@@ -802,7 +1000,7 @@ export class CLOBClient extends BaseClient {
             return { ...headers, "x-signature": fullSig };
         }
 
-        public async getOrder(orderId: string | Uint8Array): Promise<Result<any>> {
+        public async getOrder(orderId: string | Uint8Array): Promise<Result<Order>> {
             const validationResult = validateOrderIdFormat(orderId, 'orderId');
             if (!validationResult.success) {
                 return Result.fail(validationResult.error!);
@@ -818,14 +1016,18 @@ export class CLOBClient extends BaseClient {
                     if (!resolved.success || !resolved.data) {
                         return Result.fail(resolved.error || 'Order not found');
                     }
-                    return Result.ok(await this._formatOrderData(resolved.data.orderData));
+                    const orderResult = await this._formatOrderData(resolved.data.orderData);
+                    if (!orderResult.success || !orderResult.data) {
+                        return Result.fail(orderResult.error || 'Order formatting failed');
+                    }
+                    return Result.ok(orderResult.data);
                 });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'getting order'));
             }
         }
 
-        public async getOrderByClientId(clientOrderId: string | Uint8Array): Promise<Result<any>> {
+        public async getOrderByClientId(clientOrderId: string | Uint8Array): Promise<Result<Order>> {
             const validationResult = validateOrderIdFormat(clientOrderId, 'clientOrderId');
             if (!validationResult.success) {
                 return Result.fail(validationResult.error!);
@@ -852,7 +1054,11 @@ export class CLOBClient extends BaseClient {
                     if (!orderData) {
                         return Result.fail('Order not found (Client ID).');
                     }
-                    return Result.ok(await this._formatOrderData(orderData));
+                    const orderResult = await this._formatOrderData(orderData);
+                    if (!orderResult.success || !orderResult.data) {
+                        return Result.fail(orderResult.error || 'Order formatting failed');
+                    }
+                    return Result.ok(orderResult.data);
                 });
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'getting order by client ID'));
@@ -982,6 +1188,9 @@ export class CLOBClient extends BaseClient {
                 }
                 
                 const order = orderResult.data;
+                if (!order) {
+                    return Result.fail(orderResult.error || 'Order not found');
+                }
                 const pair = order.pair;
                 const pairData = this.pairs[pair];
                 if (!pairData) {
@@ -1000,8 +1209,8 @@ export class CLOBClient extends BaseClient {
                 const priceWei = BigInt(Utils.unitConversion(price, pairData.quote_decimals, true));
                 const qtyWei = BigInt(Utils.unitConversion(amount, pairData.base_decimals, true));
                 const newClientOrderId = ethers.hexlify(ethers.randomBytes(32));
-                const orderIdBytes = this._slotToBytes32Hex(order.id);
-                const cancelledInternalOrderId = this._slotToBytes32Hex(order.id);
+                const orderIdBytes = this._slotToBytes32Hex(order.internalOrderId);
+                const cancelledInternalOrderId = this._slotToBytes32Hex(order.internalOrderId);
                 const cancelledClientOrderId = this._slotToBytes32Hex(order.clientOrderId);
 
                 if (!this._tradePairsDeployment()) {
@@ -1113,9 +1322,12 @@ export class CLOBClient extends BaseClient {
                         return Result.fail(orderResult.error!);
                     }
                     const orderDetails = orderResult.data;
-                    const orderIdBytes = this._slotToBytes32Hex(orderDetails.id);
+                    if (!orderDetails) {
+                        return Result.fail(orderResult.error || 'Order not found');
+                    }
+                    const orderIdBytes = this._slotToBytes32Hex(orderDetails.internalOrderId);
                     orderIds.push(orderIdBytes);
-                    cancelledInternalOrderIds.push(this._slotToBytes32Hex(orderDetails.id));
+                    cancelledInternalOrderIds.push(this._slotToBytes32Hex(orderDetails.internalOrderId));
                     cancelledClientOrderIds.push(this._slotToBytes32Hex(orderDetails.clientOrderId));
 
                     let side = rep.side;
@@ -1196,34 +1408,83 @@ export class CLOBClient extends BaseClient {
             }
         }
 
-        public async _formatOrderData(orderData: any[]): Promise<any> {
-            const tradePairId = orderData[2];
-            let pairInfo = Object.values(this.pairs).find(p => p.tradePairId === tradePairId);
-            
-            if (!pairInfo) {
-                await this.getClobPairs();
-                pairInfo = Object.values(this.pairs).find(p => p.tradePairId === tradePairId);
+        public async _formatOrderData(orderData: any[]): Promise<Result<Order>> {
+            if (!Array.isArray(orderData) || orderData.length < 15) {
+                return Result.fail('Order data missing required createBlock/updateBlock fields.');
             }
 
-            const res: any = {
-                id: orderData[0],
-                clientOrderId: orderData[1],
-                tradePairId: tradePairId,
-                price: orderData[3],
-                quantity: orderData[5],
-                filledQuantity: orderData[6],
-                status: orderData[12],
-                side: (orderData[9] == 0) ? 'BUY' : 'SELL',
-                type: (orderData[10] == 0) ? 'MARKET' : 'LIMIT',
-            };
+            try {
+                const tradePairId = this._toHexIdentifier(orderData[2]);
+                let pairInfo = this._findPairInfoByTradePairId(tradePairId);
 
-            if (pairInfo) {
-                res.price = parseFloat(Utils.unitConversion(res.price, pairInfo.quote_decimals, false));
-                res.quantity = parseFloat(Utils.unitConversion(res.quantity, pairInfo.base_decimals, false));
-                res.filledQuantity = parseFloat(Utils.unitConversion(res.filledQuantity, pairInfo.base_decimals, false));
-                res.pair = pairInfo.pair;
+                if (!pairInfo) {
+                    const pairsResult = await this.getClobPairs();
+                    if (!pairsResult.success) {
+                        return Result.fail(pairsResult.error!);
+                    }
+                    pairInfo = this._findPairInfoByTradePairId(tradePairId);
+                }
+
+                if (!pairInfo) {
+                    return Result.fail('Could not determine pair from order data.');
+                }
+
+                const side = this._enumToName(orderData[9], { 0: 'BUY', 1: 'SELL' });
+                const type1 = this._enumToName(orderData[10], {
+                    0: 'MARKET',
+                    1: 'LIMIT',
+                    2: 'STOP',
+                    3: 'STOPLIMIT',
+                });
+                const type2 = this._enumToName(orderData[11], { 0: 'GTC', 1: 'FOK', 2: 'IOC', 3: 'PO' });
+                const status = this._enumToName(orderData[12], {
+                    0: 'NEW',
+                    1: 'REJECTED',
+                    2: 'PARTIAL',
+                    3: 'FILLED',
+                    4: 'CANCELED',
+                    5: 'EXPIRED',
+                    6: 'KILLED',
+                });
+
+                const traderAddress =
+                    typeof orderData[8] === 'string' && orderData[8]
+                        ? orderData[8]
+                        : String(orderData[8] ?? '');
+
+                return Result.ok(
+                    this._buildCanonicalOrder({
+                        internalOrderId: this._toHexIdentifier(orderData[0]),
+                        clientOrderId: this._toHexIdentifier(orderData[1]),
+                        tradePairId,
+                        pair: pairInfo.pair,
+                        price: parseFloat(
+                            Utils.unitConversion(orderData[3], pairInfo.quote_decimals, false)
+                        ),
+                        totalAmount: parseFloat(
+                            Utils.unitConversion(orderData[4], pairInfo.quote_decimals, false)
+                        ),
+                        quantity: parseFloat(
+                            Utils.unitConversion(orderData[5], pairInfo.base_decimals, false)
+                        ),
+                        quantityFilled: parseFloat(
+                            Utils.unitConversion(orderData[6], pairInfo.base_decimals, false)
+                        ),
+                        totalFee: parseFloat(
+                            Utils.unitConversion(orderData[7], pairInfo.quote_decimals, false)
+                        ),
+                        traderAddress,
+                        side: String(side),
+                        type1: String(type1),
+                        type2: String(type2),
+                        status: String(status),
+                        updateBlock: this._coerceOrderBlock(orderData[13], 'updateBlock'),
+                        createBlock: this._coerceOrderBlock(orderData[14], 'createBlock'),
+                    })
+                );
+            } catch (e: unknown) {
+                return Result.fail(e instanceof Error ? e.message : String(e));
             }
-            return res;
         }
 }
 

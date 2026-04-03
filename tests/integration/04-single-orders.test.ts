@@ -42,7 +42,7 @@ describe('Integration: Single Orders', () => {
         expect(ordersResult.success).toBe(true);
         const orders = ordersResult.data!;
         expect(orders.length).toBe(1);
-        expect(orders[0].side).toBe(0); // 0 = BUY
+        expect(orders[0].side).toBe('BUY');
         expect(parseFloat(String(orders[0].quantity))).toBe(0.6);
         console.log('✅ Buy Order verified');
     }, 60000);
@@ -73,10 +73,10 @@ describe('Integration: Single Orders', () => {
         const ordersResult = await client.getOpenOrders();
         expect(ordersResult.success).toBe(true);
         const orders = ordersResult.data!;
-        const buyOrder = orders.find((o) => o.side === 0); // 0 = BUY
+        const buyOrder = orders.find((o) => o.side === 'BUY');
         expect(buyOrder).toBeDefined();
         
-        const result = await client.cancelOrder(buyOrder!.id);
+        const result = await client.cancelOrder(buyOrder!.internalOrderId);
         expect(result.success).toBe(true);
         expect(result.data!.txHash).toBeDefined();
         console.log(`Cancelled Buy Order: ${result.data!.txHash}`);
@@ -87,7 +87,7 @@ describe('Integration: Single Orders', () => {
         expect(remainingResult.success).toBe(true);
         const remainingOrders = remainingResult.data!;
         expect(remainingOrders.length).toBe(1);
-        expect(remainingOrders[0].side).toBe(1); // Only Sell remains (1 = SELL)
+        expect(remainingOrders[0].side).toBe('SELL');
         console.log('✅ Cancel verification passed');
     }, 60000);
 });

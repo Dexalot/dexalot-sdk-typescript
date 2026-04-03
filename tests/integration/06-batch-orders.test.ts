@@ -51,12 +51,12 @@ describe('Integration: Batch Orders', () => {
         
         const replacements = orders.map((order) => {
             // side: 0=BUY, 1=SELL (API returns numbers)
-            const isSell = order.side === 1;
+            const isSell = order.side === 'SELL';
             const newPrice = isSell 
                 ? parseFloat(String(order.price)) + 1.0 
                 : parseFloat(String(order.price)) - 1.0;
             return {
-                order_id: order.id,
+                order_id: order.internalOrderId,
                 pair,
                 side: isSell ? 'SELL' : 'BUY',
                 amount: parseFloat(String(order.quantity)),
@@ -82,7 +82,7 @@ describe('Integration: Batch Orders', () => {
         const ordersResult = await client.getOpenOrders();
         expect(ordersResult.success).toBe(true);
         const orders = ordersResult.data!;
-        const buyOrders = orders.filter((o) => o.side === 0); // 0 = BUY
+        const buyOrders = orders.filter((o) => o.side === 'BUY');
         const buyClientIds = buyOrders
             .map((o) => o.clientOrderId)
             .filter((id): id is string => id !== undefined && id !== null);
@@ -99,7 +99,7 @@ describe('Integration: Batch Orders', () => {
         expect(remainingResult.success).toBe(true);
         const remainingOrders = remainingResult.data!;
         expect(remainingOrders.length).toBe(2);
-        expect(remainingOrders.every((o) => o.side === 1)).toBe(true); // 1 = SELL
+        expect(remainingOrders.every((o) => o.side === 'SELL')).toBe(true);
         console.log('✅ Cancel by Client ID verified');
     }, 60000);
 
@@ -107,7 +107,7 @@ describe('Integration: Batch Orders', () => {
         const ordersResult = await client.getOpenOrders();
         expect(ordersResult.success).toBe(true);
         const orders = ordersResult.data!;
-        const sellIds = orders.map((o) => o.id);
+        const sellIds = orders.map((o) => o.internalOrderId);
         
         const result = await (client as any).cancelListOrders(sellIds);
         expect(result.success).toBe(true);
