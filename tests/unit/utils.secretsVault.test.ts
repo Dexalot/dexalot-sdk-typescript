@@ -9,6 +9,26 @@ import {
     secretsVaultRemove,
 } from '../../src/utils/secretsVault';
 
+type VaultEntry = {
+    value: string;
+    created_at: string;
+    updated_at: string;
+};
+
+type VaultFile = {
+    format: string;
+    version: number;
+    entries: Record<string, VaultEntry>;
+};
+
+function readVaultFile(vaultPath: string): VaultFile {
+    return JSON.parse(fs.readFileSync(vaultPath, 'utf8')) as VaultFile;
+}
+
+function writeVaultFile(vaultPath: string, data: VaultFile): void {
+    fs.writeFileSync(vaultPath, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+}
+
 describe('secretsVault', () => {
     let tmpDir: string;
     let vaultPath: string;
@@ -28,7 +48,6 @@ describe('secretsVault', () => {
     describe('generateSecretsVaultKey', () => {
         it('should return a URL-safe base64 string (43 chars for 32 bytes)', () => {
             const key = generateSecretsVaultKey();
-            // 32 bytes in base64url = 43 chars (no padding)
             expect(key).toMatch(/^[A-Za-z0-9_-]+$/);
             const decoded = Buffer.from(key, 'base64url');
             expect(decoded.length).toBe(32);
@@ -54,10 +73,22 @@ describe('secretsVault', () => {
 
         it('should handle unicode values', () => {
             const encKey = generateSecretsVaultKey();
-            secretsVaultSet(vaultPath, 'UNICODE', 'hello \u{1F600} world', encKey);
+            secretsVaultSet(vaultPath, 'UNICODE', 'hello 😀 world', encKey);
             const result = secretsVaultGet(vaultPath, 'UNICODE', encKey);
             expect(result.success).toBe(true);
-            expect(result.data).toBe('hello \u{1F600} world');
+            expect(result.data).toBe('hello 😀 world');
+        });
+
+        it('should create a portable JSON vault file', () => {
+            const encKey = generateSecretsVaultKey();
+            const freshVault = path.join(tmpDir, 'json_vault.db');
+
+            secretsVaultSet(freshVault, 'PORTABLE', 'value', encKey);
+            const data = readVaultFile(freshVault);
+            expect(data.format).toBe('dexalot-secrets-vault');
+            expect(data.version).toBe(1);
+            expect(data.entries.PORTABLE).toBeDefined();
+            expect(typeof data.entries.PORTABLE.value).toBe('string');
         });
     });
 
@@ -148,12 +179,14 @@ describe('secretsVault', () => {
             const encKey = generateSecretsVaultKey();
 
             secretsVaultSet(freshVault, 'KEY1', 'first', encKey);
-            const first = secretsVaultGet(freshVault, 'KEY1', encKey);
-            expect(first.data).toBe('first');
+            const before = readVaultFile(freshVault).entries.KEY1;
+            expect(secretsVaultGet(freshVault, 'KEY1', encKey).data).toBe('first');
 
             secretsVaultSet(freshVault, 'KEY1', 'second', encKey);
-            const second = secretsVaultGet(freshVault, 'KEY1', encKey);
-            expect(second.data).toBe('second');
+            const after = readVaultFile(freshVault).entries.KEY1;
+            expect(secretsVaultGet(freshVault, 'KEY1', encKey).data).toBe('second');
+            expect(after.created_at).toBe(before.created_at);
+            expect(after.updated_at >= before.updated_at).toBe(true);
         });
     });
 
@@ -177,19 +210,14 @@ describe('secretsVault', () => {
         });
 
         it('should fail when Fernet token is too short', () => {
-            // Create a vault with a manually corrupted (truncated) token
             const freshVault = path.join(tmpDir, 'short_token.db');
             const encKey = generateSecretsVaultKey();
 
-            // First set a valid value
             secretsVaultSet(freshVault, 'TRUNC', 'value', encKey);
 
-            // Now directly corrupt the stored token in the database
-            const Database = require('better-sqlite3');
-            const db = new Database(freshVault);
-            const shortToken = Buffer.alloc(10); // Way too short for Fernet
-            db.prepare('UPDATE secrets_vault SET value = ? WHERE key = ?').run(shortToken, 'TRUNC');
-            db.close();
+            const data = readVaultFile(freshVault);
+            data.entries.TRUNC.value = Buffer.alloc(10).toString('base64');
+            writeVaultFile(freshVault, data);
 
             const result = secretsVaultGet(freshVault, 'TRUNC', encKey);
             expect(result.success).toBe(false);
@@ -202,14 +230,11 @@ describe('secretsVault', () => {
 
             secretsVaultSet(freshVault, 'BADVER', 'value', encKey);
 
-            // Corrupt the version byte (first byte should be 0x80)
-            const Database = require('better-sqlite3');
-            const db = new Database(freshVault);
-            const row = db.prepare('SELECT value FROM secrets_vault WHERE key = ?').get('BADVER');
-            const token = Buffer.from(row.value);
-            token[0] = 0x99; // Wrong version
-            db.prepare('UPDATE secrets_vault SET value = ? WHERE key = ?').run(token, 'BADVER');
-            db.close();
+            const data = readVaultFile(freshVault);
+            const token = Buffer.from(data.entries.BADVER.value, 'base64');
+            token[0] = 0x99;
+            data.entries.BADVER.value = token.toString('base64');
+            writeVaultFile(freshVault, data);
 
             const result = secretsVaultGet(freshVault, 'BADVER', encKey);
             expect(result.success).toBe(false);
@@ -222,15 +247,11 @@ describe('secretsVault', () => {
 
             secretsVaultSet(freshVault, 'HMAC', 'value', encKey);
 
-            // Corrupt the HMAC (last 32 bytes)
-            const Database = require('better-sqlite3');
-            const db = new Database(freshVault);
-            const row = db.prepare('SELECT value FROM secrets_vault WHERE key = ?').get('HMAC');
-            const token = Buffer.from(row.value);
-            // Flip a byte in the HMAC section
+            const data = readVaultFile(freshVault);
+            const token = Buffer.from(data.entries.HMAC.value, 'base64');
             token[token.length - 1] ^= 0xFF;
-            db.prepare('UPDATE secrets_vault SET value = ? WHERE key = ?').run(token, 'HMAC');
-            db.close();
+            data.entries.HMAC.value = token.toString('base64');
+            writeVaultFile(freshVault, data);
 
             const result = secretsVaultGet(freshVault, 'HMAC', encKey);
             expect(result.success).toBe(false);
@@ -347,41 +368,111 @@ describe('secretsVault', () => {
         });
     });
 
-    describe('secretsVaultGet non-Fernet error path', () => {
-        it('should return generic error for non-Fernet database errors', () => {
-            // Use a directory as the "database file" to cause a sqlite error
-            const dirAsDb = path.join(tmpDir, 'dir_as_db');
-            fs.mkdirSync(dirAsDb, { recursive: true });
+    describe('file format error paths', () => {
+        it('should return generic error for non-Fernet vault access errors', () => {
+            const dirAsVault = path.join(tmpDir, 'dir_as_vault');
+            fs.mkdirSync(dirAsVault, { recursive: true });
 
             const encKey = generateSecretsVaultKey();
-            const result = secretsVaultGet(dirAsDb, 'KEY', encKey);
+            const result = secretsVaultGet(dirAsVault, 'KEY', encKey);
             expect(result.success).toBe(false);
             expect(result.error).toContain('secretsVaultGet failed');
         });
-    });
 
-    describe('secretsVaultList error path', () => {
-        it('should return error when database cannot be opened', () => {
-            // Use a directory as the "database file" to cause a sqlite error
-            const dirAsDb = path.join(tmpDir, 'dir_as_db_list');
-            fs.mkdirSync(dirAsDb, { recursive: true });
+        it('should return error when vault cannot be listed', () => {
+            const dirAsVault = path.join(tmpDir, 'dir_as_vault_list');
+            fs.mkdirSync(dirAsVault, { recursive: true });
 
-            const result = secretsVaultList(dirAsDb);
+            const result = secretsVaultList(dirAsVault);
             expect(result.success).toBe(false);
             expect(result.error).toContain('secretsVaultList failed');
         });
-    });
 
-    describe('secretsVaultRemove error path', () => {
-        it('should return error when database cannot be opened', () => {
-            // Use a directory as the "database file" to cause a sqlite error
-            const dirAsDb = path.join(tmpDir, 'dir_as_db_remove');
-            fs.mkdirSync(dirAsDb, { recursive: true });
+        it('should return error when vault cannot be updated', () => {
+            const dirAsVault = path.join(tmpDir, 'dir_as_vault_remove');
+            fs.mkdirSync(dirAsVault, { recursive: true });
 
-            const result = secretsVaultRemove(dirAsDb, 'KEY');
+            const result = secretsVaultRemove(dirAsVault, 'KEY');
             expect(result.success).toBe(false);
             expect(result.error).toContain('secretsVaultRemove failed');
         });
-    });
 
+        it('should fail when the vault payload is not an object', () => {
+            const freshVault = path.join(tmpDir, 'bad_payload.db');
+            fs.writeFileSync(freshVault, 'null\n', 'utf8');
+
+            const result = secretsVaultList(freshVault);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Invalid secrets vault file format');
+        });
+
+        it('should fail when the vault format marker is unsupported', () => {
+            const freshVault = path.join(tmpDir, 'bad_format.db');
+            writeVaultFile(freshVault, {
+                format: 'something-else',
+                version: 1,
+                entries: {},
+            });
+
+            const result = secretsVaultList(freshVault);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Unsupported secrets vault format');
+        });
+
+        it('should fail when the vault version is unsupported', () => {
+            const freshVault = path.join(tmpDir, 'bad_version_marker.db');
+            writeVaultFile(freshVault, {
+                format: 'dexalot-secrets-vault',
+                version: 2,
+                entries: {},
+            });
+
+            const result = secretsVaultList(freshVault);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Unsupported secrets vault version');
+        });
+
+        it('should fail when the vault entries payload is invalid', () => {
+            const freshVault = path.join(tmpDir, 'bad_entries.db');
+            fs.writeFileSync(
+                freshVault,
+                JSON.stringify({ format: 'dexalot-secrets-vault', version: 1, entries: [] }, null, 2) + '\n',
+                'utf8'
+            );
+
+            const result = secretsVaultList(freshVault);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Invalid secrets vault file format');
+        });
+
+        it('should fail when a vault entry payload is invalid', () => {
+            const freshVault = path.join(tmpDir, 'bad_entry.db');
+            fs.writeFileSync(
+                freshVault,
+                JSON.stringify({
+                    format: 'dexalot-secrets-vault',
+                    version: 1,
+                    entries: { BROKEN: { value: 'abc', created_at: 'now' } },
+                }, null, 2) + '\n',
+                'utf8'
+            );
+
+            const result = secretsVaultList(freshVault);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain("Invalid secrets vault entry for key 'BROKEN'");
+        });
+
+        it('should restore owner-only permissions on rewrite', () => {
+            const freshVault = path.join(tmpDir, 'permissions_vault.db');
+            const encKey = generateSecretsVaultKey();
+
+            expect(secretsVaultSet(freshVault, 'ONE', 'value', encKey).success).toBe(true);
+            if (process.platform !== 'win32') {
+                fs.chmodSync(freshVault, 0o644);
+                expect(secretsVaultSet(freshVault, 'TWO', 'value', encKey).success).toBe(true);
+                expect(fs.statSync(freshVault).mode & 0o777).toBe(0o600);
+            }
+        });
+
+    });
 });
