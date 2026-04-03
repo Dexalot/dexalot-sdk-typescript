@@ -1147,10 +1147,29 @@ export class BaseClient {
         address: string,
         abi: any[]
     ): Contract {
-        if (!this.signer) {
+        const signer = this.signer;
+        if (!signer) {
             throw new Error('Signer required');
         }
-        return new Contract(address, abi, this.signer.connect(provider));
+        try {
+            return new Contract(address, abi, signer.connect(provider));
+        } catch (e: unknown) {
+            // Browser/injected signers (e.g. Privy, MetaMask) cannot reconnect to an arbitrary JsonRpcProvider.
+            // Use the signer's own provider so L1 txs broadcast through the wallet after the correct chain switch.
+            const code =
+                e !== null && typeof e === 'object' && 'code' in e
+                    ? String((e as { code?: unknown }).code)
+                    : '';
+            const message = e instanceof Error ? e.message : String(e);
+            const unsupported =
+                code === 'UNSUPPORTED_OPERATION' ||
+                message.includes('UNSUPPORTED_OPERATION') ||
+                message.includes('cannot reconnect');
+            if (unsupported && signer.provider) {
+                return new Contract(address, abi, signer);
+            }
+            throw e;
+        }
     }
 
     /** Read-only contract for view calls on a specific RPC. */
