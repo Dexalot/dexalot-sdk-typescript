@@ -1,6 +1,6 @@
 {
   "name": "dexalot-sdk",
-  "version": "0.5.9",
+  "version": "0.5.10",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -13,6 +13,11 @@
       "types": "./dist/internal.d.ts",
       "import": "./dist/internal.js",
       "require": "./dist/internal.js"
+    },
+    "./secrets-vault": {
+      "types": "./dist/secrets-vault.d.ts",
+      "import": "./dist/secrets-vault.js",
+      "require": "./dist/secrets-vault.js"
     }
   },
   "scripts": {
