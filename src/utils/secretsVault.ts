@@ -11,8 +11,8 @@
  *
  * Import from `dexalot-sdk/secrets-vault` (Node only). Typical usage:
  *   const key = generateSecretsVaultKey();
- *   secretsVaultSet('~/.dexalot/secrets_vault.db', 'PRIVATE_KEY', '0x...', key);
- *   const result = secretsVaultGet('~/.dexalot/secrets_vault.db', 'PRIVATE_KEY', key);
+ *   secretsVaultSet('~/.dexalot/secrets_vault.json', 'PRIVATE_KEY', '0x...', key);
+ *   const result = secretsVaultGet('~/.dexalot/secrets_vault.json', 'PRIVATE_KEY', key);
  *   if (result.success) {
  *       const privateKey = result.data;
  *   }

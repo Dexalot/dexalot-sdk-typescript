@@ -26,6 +26,7 @@
     "test": "jest",
     "test:unit": "jest tests/unit",
     "test:int": "jest tests/integration",
+    "secrets-vault": "node scripts/secrets_vault_cli.mjs",
     "version:validate": "node scripts/version_manager.mjs validate",
     "version:bump:patch": "node scripts/version_manager.mjs bump patch"
   },
