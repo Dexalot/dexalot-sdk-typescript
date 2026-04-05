@@ -54,10 +54,11 @@ export interface Order {
   type1: 'MARKET' | 'LIMIT' | 'STOP' | 'STOPLIMIT' | string;
   type2: 'GTC' | 'FOK' | 'IOC' | 'PO' | string;
   status: 'NEW' | 'REJECTED' | 'PARTIAL' | 'FILLED' | 'CANCELED' | 'EXPIRED' | 'KILLED' | string;
-  updateBlock: number;
-  createBlock: number;
+  updateBlock: number | null;
+  createBlock: number | null;
   createTs: string | null;
   updateTs: string | null;
+  tx?: string | null;
 }
 
 export interface OrderBookEntry {

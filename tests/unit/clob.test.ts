@@ -2052,6 +2052,12 @@ describe('order helper branch coverage', () => {
         expect((client as any)._coerceOrderBlock({ valueOf: () => 12 }, 'createBlock')).toBe(12);
     });
 
+    it('_coerceOptionalOrderBlock covers null, blank, and delegated parsing branches', () => {
+        expect((client as any)._coerceOptionalOrderBlock(undefined, 'createBlock')).toBeNull();
+        expect((client as any)._coerceOptionalOrderBlock('   ', 'createBlock')).toBeNull();
+        expect((client as any)._coerceOptionalOrderBlock('0x10', 'createBlock')).toBe(16);
+    });
+
     it('_enumToName and _toHexIdentifier cover bigint/Uint8Array/fallback branches', () => {
         expect((client as any)._enumToName(1n, { 1: 'LIMIT' })).toBe('LIMIT');
         expect((client as any)._enumToName(7, { 1: 'LIMIT' })).toBe(7);
@@ -2341,6 +2347,32 @@ describe('order helper branch coverage', () => {
         expect(order.traderAddress).toBe('');
         expect(order.createTs).toBe('2024-01-04T00:00:00.000Z');
         expect(order.updateTs).toBe('2024-01-05T00:00:00.000Z');
+    });
+
+    it('_transformOrderFromAPI accepts block-less signed-order rows and preserves tx/timestamps', () => {
+        const order = (client as any)._transformOrderFromAPI({
+            id: VALID_ORDER_ID,
+            clientordid: VALID_CLIENT_ID,
+            pair: 'AVAX/USDC',
+            price: '12.25',
+            totalamount: '0',
+            quantity: '0.6',
+            quantityfilled: '0',
+            totalfee: '0',
+            traderaddress: '0xabc',
+            side: 0,
+            type: 1,
+            type2: 0,
+            status: 0,
+            ts: '2026-04-05T13:41:13.000Z',
+            update_ts: '2026-04-05T13:41:13.000Z',
+            tx: '0xtxhash',
+        });
+        expect(order.createBlock).toBeNull();
+        expect(order.updateBlock).toBeNull();
+        expect(order.createTs).toBe('2026-04-05T13:41:13.000Z');
+        expect(order.updateTs).toBe('2026-04-05T13:41:13.000Z');
+        expect(order.tx).toBe('0xtxhash');
     });
 
     it('_transformOrderFromAPI prefers direct createTs over later timestamp aliases', () => {

@@ -123,6 +123,16 @@ export class CLOBClient extends BaseClient {
             return parsed;
         }
 
+        private _coerceOptionalOrderBlock(value: unknown, fieldName: string): number | null {
+            if (value === null || value === undefined) {
+                return null;
+            }
+            if (typeof value === 'string' && !value.trim()) {
+                return null;
+            }
+            return this._coerceOrderBlock(value, fieldName);
+        }
+
         private _enumToName(value: unknown, mapping: Record<number, string>): unknown {
             if (typeof value === 'bigint') {
                 return mapping[Number(value)] ?? Number(value);
@@ -183,10 +193,11 @@ export class CLOBClient extends BaseClient {
             type1: string;
             type2: string;
             status: string;
-            updateBlock: number;
-            createBlock: number;
+            updateBlock: number | null;
+            createBlock: number | null;
             createTs?: string | null;
             updateTs?: string | null;
+            tx?: string | null;
         }): Order {
             return {
                 internalOrderId: params.internalOrderId,
@@ -207,6 +218,7 @@ export class CLOBClient extends BaseClient {
                 createBlock: params.createBlock,
                 createTs: params.createTs ?? null,
                 updateTs: params.updateTs ?? null,
+                tx: params.tx ?? null,
             };
         }
 
@@ -852,10 +864,11 @@ export class CLOBClient extends BaseClient {
                 type1: String(type1),
                 type2: String(type2),
                 status: String(status),
-                updateBlock: this._coerceOrderBlock(order.updateBlock ?? order.update_block, 'updateBlock'),
-                createBlock: this._coerceOrderBlock(order.createBlock ?? order.create_block, 'createBlock'),
+                updateBlock: this._coerceOptionalOrderBlock(order.updateBlock ?? order.update_block, 'updateBlock'),
+                createBlock: this._coerceOptionalOrderBlock(order.createBlock ?? order.create_block, 'createBlock'),
                 createTs: order.createTs ?? order.create_ts ?? order.timestamp ?? order.ts ?? null,
                 updateTs: order.updateTs ?? order.update_ts ?? order.updatets ?? null,
+                tx: order.tx ?? order.txHash ?? null,
             });
         }
 
