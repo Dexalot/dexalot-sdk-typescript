@@ -898,9 +898,9 @@ Order reads (`getOpenOrders`, `getOrder`, `getOrderByClientId`) return one canon
 - `internalOrderId`, `clientOrderId`, `tradePairId`, `pair`
 - `price`, `totalAmount`, `quantity`, `quantityFilled`, `totalFee`
 - `traderAddress`, `side`, `type1`, `type2`, `status`
-- `updateBlock`, `createBlock`, `createTs`, `updateTs`
+- `updateBlock`, `createBlock`, `createTs`, `updateTs`, `tx`
 
-Enum-style fields are normalized to human-readable strings such as `BUY`, `SELL`, `LIMIT`, `GTC`, and `FILLED`. `createBlock` and `updateBlock` are returned as JavaScript numbers, not hex strings.
+Enum-style fields are normalized to human-readable strings such as `BUY`, `SELL`, `LIMIT`, `GTC`, and `FILLED`. Contract-backed reads return `createBlock` and `updateBlock` as JavaScript numbers, not hex strings. API-backed open orders may return those block fields as `null` when the Dexalot API omits them, while still preserving `createTs`, `updateTs`, and `tx`.
 
 ## API Field Name Standardization
 
@@ -914,7 +914,7 @@ The SDK automatically standardizes API response field names to match TypeScript 
 - `tradePairId` (from `tradePairId`, `tradepairid`, `trade_pair_id`, or derived from `pair`)
 - `pair`, `price`, `quantity`, `quantityFilled`, `totalAmount`, `totalFee`
 - `traderAddress`, `side`, `type1`, `type2`, `status`
-- `createBlock`, `updateBlock`, `createTs`, `updateTs`
+- `createBlock`, `updateBlock`, `createTs`, `updateTs`, `tx`
 
 Orders are normalized into one canonical SDK shape across REST and contract order reads.
 
