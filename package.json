@@ -1,6 +1,10 @@
 {
   "name": "@dexalot/dexalot-sdk",
-  "version": "0.5.15",
+  "version": "0.5.16",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
