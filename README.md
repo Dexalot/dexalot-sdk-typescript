@@ -1,5 +1,11 @@
 # Dexalot TypeScript SDK
 
+## Disclaimer
+
+Here is our first public release of Dexalot SDK for TypeScript.  It is in alpha testing right now.  Fork it, contribute to it and use it to integrate with Dexalot and let us know how we can improve it.
+
+**Pleaase Note**: The public interface may undergo breaking changes.
+
 ## Overview
 
 `dexalot-sdk` is a TypeScript/JavaScript library that provides core functionality for interacting with the Dexalot decentralized exchange. It offers a unified client interface for trading operations, cross-chain transfers, and portfolio management across multiple blockchain networks.
