@@ -7,6 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  id-token: write
   contents: read
 
 jobs:
@@ -16,9 +17,6 @@ jobs:
     environment:
       name: npm
       url: https://npmjs.com/package/@dexalot/dexalot-sdk
-    permissions:
-      contents: read
-      id-token: write
 
     steps:
       - name: Check out repository
