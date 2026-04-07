@@ -2,6 +2,10 @@
   "name": "@dexalot/dexalot-sdk",
   "version": "0.5.17",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Dexalot/dexalot-sdk-typescript"
+  },
   "publishConfig": {
     "access": "public"
   },
