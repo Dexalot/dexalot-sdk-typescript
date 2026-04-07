@@ -4,7 +4,6 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
 
 permissions:
   id-token: write
@@ -20,19 +19,15 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v6
         with:
           node-version: "22"
           registry-url: https://registry.npmjs.org
-          cache: pnpm
 
       - name: Ensure workflow runs from a version tag
         env:
@@ -74,13 +69,13 @@ jobs:
           JS
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: npm ci
 
       - name: Build distributions
-        run: pnpm run build
+        run: npm run build
 
       - name: Validate package contents
         run: npm pack --dry-run
 
       - name: Publish to NPM
-        run: npm publish --provenance --access public
+        run: npm publish
