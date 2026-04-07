@@ -29,8 +29,8 @@ jobs:
           node-version: "22"
           registry-url: https://registry.npmjs.org
 
-      - name: Update npm to 11.12.1
-        run: npm install -g npm@11.12.1
+      - name: Update npm to latest version
+        run: npm install -g npm@latest
 
       - name: Ensure workflow runs from a version tag
         env:
