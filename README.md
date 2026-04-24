@@ -46,25 +46,24 @@ Here is our first public release of Dexalot SDK for TypeScript.  It is in alpha 
 Install the SDK using pnpm (recommended):
 
 ```sh
-pnpm add dexalot-sdk
+pnpm add @dexalot/dexalot-sdk
 ```
 
 Or use alternative package managers:
 
 ```sh
 # npm
-npm install dexalot-sdk
+npm install @dexalot/dexalot-sdk
 
 # yarn
-yarn add dexalot-sdk
+yarn add @dexalot/dexalot-sdk
 ```
 
-Or install from the repository:
+Or install directly from the repository (the `prepare` script builds
+`dist/` automatically, so no separate build step is needed):
 
 ```sh
-cd typescript/dexalot-sdk
-pnpm install
-pnpm run build
+pnpm add github:Dexalot/dexalot-sdk-typescript
 ```
 
 ## Package exports
@@ -224,6 +223,55 @@ pnpm test          # Unit tests
 pnpm test:unit     # Unit tests only
 pnpm test:int      # Integration tests
 ```
+
+## Release
+
+Releases are **tag-driven**. Pushing a `v*` tag to `main` triggers
+`.github/workflows/npm.yml`, which builds the package and publishes
+to NPM via trusted publishing (OIDC — no long-lived NPM token is
+stored anywhere) with `npm publish --provenance` for supply-chain
+attestation.
+
+**Release gates (all enforced by the workflow):**
+
+1. `github.ref_type` must be `tag` (not `branch`).
+2. The tagged commit must be reachable from `origin/main`
+   (`git merge-base --is-ancestor`). Tags on throwaway branches will
+   not publish.
+3. The tag name must equal `v{package.json version}`.
+
+**Steps:**
+
+1. Sync the version across all version-bearing files:
+
+   ```sh
+   pnpm run version:bump:patch
+   # touches package.json, VERSION, src/version.ts
+   ```
+
+2. Review the diff, commit on a feature branch, and merge a PR into
+   `main`.
+
+3. From `main`, tag and push:
+
+   ```sh
+   git checkout main && git pull
+   git tag -a v<new-version> -m "Release v<new-version>"
+   git push origin v<new-version>
+   ```
+
+4. Watch the **Publish to NPM** workflow in GitHub Actions. On green,
+   verify the new version at
+   <https://npmjs.com/package/@dexalot/dexalot-sdk>.
+
+> ⚠️ Once a version is published to NPM it cannot be re-uploaded
+> under the same number; `npm deprecate` is the available
+> remediation. Always bump the version before tagging.
+>
+> Version numbers `v0.5.18` and `v0.5.19` previously existed as
+> local-only orphan tags and were never published. Reusing them
+> would confuse operators — the next release after `v0.5.17` should
+> start at `v0.5.20` or later.
 
 ## Caching
 
