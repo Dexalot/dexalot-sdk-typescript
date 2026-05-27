@@ -1,5 +1,6 @@
+import Big from 'big.js';
 import {
-    validatePositiveFloat,
+    validatePositiveNumber,
     validatePositiveInt,
     validateNonNegativeFloat,
     validateAddress,
@@ -14,41 +15,94 @@ import {
 import { Result } from '../../src/utils/result';
 
 describe('inputValidators', () => {
-    describe('validatePositiveFloat', () => {
+    describe('validatePositiveNumber', () => {
         it('should accept positive numbers', () => {
-            expect(validatePositiveFloat(1.5, 'value').success).toBe(true);
-            expect(validatePositiveFloat(0.001, 'value').success).toBe(true);
-            expect(validatePositiveFloat(100, 'value').success).toBe(true);
+            expect(validatePositiveNumber(1.5, 'value').success).toBe(true);
+            expect(validatePositiveNumber(0.001, 'value').success).toBe(true);
+            expect(validatePositiveNumber(100, 'value').success).toBe(true);
+        });
+
+        it('should accept positive numeric strings', () => {
+            expect(validatePositiveNumber('2933', 'value').success).toBe(true);
+            expect(validatePositiveNumber('2933.5', 'value').success).toBe(true);
+            expect(validatePositiveNumber('0.0000001', 'value').success).toBe(true);
+        });
+
+        it('should accept positive bigints', () => {
+            expect(validatePositiveNumber(1n, 'value').success).toBe(true);
+            expect(validatePositiveNumber(2933n, 'value').success).toBe(true);
+        });
+
+        it('should accept positive Big instances', () => {
+            expect(validatePositiveNumber(new Big('2933.5'), 'value').success).toBe(true);
+            expect(validatePositiveNumber(new Big(1), 'value').success).toBe(true);
         });
 
         it('should reject zero', () => {
-            const result = validatePositiveFloat(0, 'value');
+            const result = validatePositiveNumber(0, 'value');
             expect(result.success).toBe(false);
             expect(result.error).toContain('positive');
+        });
+
+        it('should reject zero in every accepted form', () => {
+            expect(validatePositiveNumber(0n, 'value').success).toBe(false);
+            expect(validatePositiveNumber('0', 'value').success).toBe(false);
+            expect(validatePositiveNumber('0.0', 'value').success).toBe(false);
+            expect(validatePositiveNumber(new Big(0), 'value').success).toBe(false);
         });
 
         it('should reject negative numbers', () => {
-            const result = validatePositiveFloat(-1, 'value');
+            const result = validatePositiveNumber(-1, 'value');
             expect(result.success).toBe(false);
             expect(result.error).toContain('positive');
         });
 
+        it('should reject negative in every accepted form', () => {
+            expect(validatePositiveNumber(-1n, 'value').success).toBe(false);
+            expect(validatePositiveNumber('-1', 'value').success).toBe(false);
+            expect(validatePositiveNumber(new Big(-1), 'value').success).toBe(false);
+        });
+
         it('should reject NaN', () => {
-            const result = validatePositiveFloat(NaN, 'value');
+            const result = validatePositiveNumber(NaN, 'value');
             expect(result.success).toBe(false);
-            expect(result.error).toContain('number');
+            expect(result.error).toContain('NaN');
         });
 
         it('should reject Infinity', () => {
-            const result = validatePositiveFloat(Infinity, 'value');
+            const result = validatePositiveNumber(Infinity, 'value');
             expect(result.success).toBe(false);
             expect(result.error).toContain('finite');
         });
 
-        it('should reject non-numbers', () => {
-            const result = validatePositiveFloat('1' as any, 'value');
+        it('should reject -Infinity', () => {
+            const result = validatePositiveNumber(-Infinity, 'value');
             expect(result.success).toBe(false);
-            expect(result.error).toContain('number');
+            expect(result.error).toContain('finite');
+        });
+
+        it('should reject non-numeric strings', () => {
+            const result = validatePositiveNumber('abc', 'value');
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('numeric string');
+        });
+
+        it('should reject empty string', () => {
+            const result = validatePositiveNumber('', 'value');
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('numeric string');
+        });
+
+        it('should reject booleans (subclass of number-ish in JS coercions)', () => {
+            expect(validatePositiveNumber(true, 'value').success).toBe(false);
+            expect(validatePositiveNumber(false, 'value').success).toBe(false);
+        });
+
+        it('should reject other non-numeric types', () => {
+            expect(validatePositiveNumber(null, 'value').success).toBe(false);
+            expect(validatePositiveNumber(undefined, 'value').success).toBe(false);
+            expect(validatePositiveNumber({}, 'value').success).toBe(false);
+            expect(validatePositiveNumber([], 'value').success).toBe(false);
         });
     });
 

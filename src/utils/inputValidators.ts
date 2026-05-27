@@ -1,3 +1,4 @@
+import Big from 'big.js';
 import { Result } from './result.js';
 
 /**
@@ -11,19 +12,62 @@ const ORDER_ID_HEX_BODY_PATTERN = /^[0-9a-fA-F]+$/;
 const TOKEN_SYMBOL_PATTERN = /^[A-Z0-9]{1,10}$/;
 
 /**
- * Validate that a value is a positive number (> 0).
+ * Validate that a value is a positive finite number (> 0).
+ *
+ * Accepts `number`, numeric `string`, `bigint`, and `Big` so callers
+ * wanting precision-exact arithmetic (for amounts on pairs with strict
+ * display decimals) can pass `new Big('2933')`, `'2933.5'`, or
+ * `2933n` rather than a float. Strings are parsed via Big.js so
+ * non-numeric input produces a precise failure message.
  */
-export function validatePositiveFloat(value: number, paramName: string): Result<null> {
-    if (typeof value !== 'number' || isNaN(value)) {
-        return Result.fail(`${paramName} must be a number, got ${typeof value}`);
+export function validatePositiveNumber(value: unknown, paramName: string): Result<null> {
+    if (typeof value === 'boolean') {
+        // booleans coerce to 0/1 in arithmetic contexts — reject so `true` does
+        // not silently slip through as `amount=1`.
+        return Result.fail(`${paramName} must be a number, got boolean`);
     }
-    if (value <= 0) {
-        return Result.fail(`${paramName} must be positive, got ${value}`);
+
+    if (typeof value === 'number') {
+        if (isNaN(value)) {
+            return Result.fail(`${paramName} must be a number, got NaN`);
+        }
+        if (!isFinite(value)) {
+            return Result.fail(`${paramName} must be finite, got ${value}`);
+        }
+        if (value <= 0) {
+            return Result.fail(`${paramName} must be positive, got ${value}`);
+        }
+        return Result.ok(null);
     }
-    if (!isFinite(value)) {
-        return Result.fail(`${paramName} must be finite, got ${value}`);
+
+    if (typeof value === 'bigint') {
+        if (value <= 0n) {
+            return Result.fail(`${paramName} must be positive, got ${value}`);
+        }
+        return Result.ok(null);
     }
-    return Result.ok(null);
+
+    if (value instanceof Big) {
+        if (value.lte(0)) {
+            return Result.fail(`${paramName} must be positive, got ${value.toString()}`);
+        }
+        return Result.ok(null);
+    }
+
+    if (typeof value === 'string') {
+        let parsed: Big;
+        try {
+            parsed = new Big(value);
+        } catch {
+            return Result.fail(`${paramName} must be a numeric string, got ${JSON.stringify(value)}`);
+        }
+        if (parsed.lte(0)) {
+            return Result.fail(`${paramName} must be positive, got ${value}`);
+        }
+        return Result.ok(null);
+    }
+
+    return Result.fail(`${paramName} must be a number, got ${typeof value}`);
 }
 
 /**
@@ -208,7 +252,7 @@ export function validateOrderParams(
     if (!pairResult.success) return pairResult;
 
     // Validate amount
-    const amountResult = validatePositiveFloat(amount, 'amount');
+    const amountResult = validatePositiveNumber(amount, 'amount');
     if (!amountResult.success) return amountResult;
 
     // Validate order type
@@ -223,7 +267,7 @@ export function validateOrderParams(
         if (price === null || price === undefined) {
             return Result.fail('price is required for LIMIT orders');
         }
-        const priceResult = validatePositiveFloat(price, 'price');
+        const priceResult = validatePositiveNumber(price, 'price');
         if (!priceResult.success) return priceResult;
     }
 
@@ -243,7 +287,7 @@ export function validateTransferParams(
     if (!tokenResult.success) return tokenResult;
 
     // Validate amount
-    const amountResult = validatePositiveFloat(amount, 'amount');
+    const amountResult = validatePositiveNumber(amount, 'amount');
     if (!amountResult.success) return amountResult;
 
     // Validate address
@@ -275,7 +319,7 @@ export function validateSwapParams(
     }
 
     // Validate amount
-    const amountResult = validatePositiveFloat(amount, 'amount');
+    const amountResult = validatePositiveNumber(amount, 'amount');
     if (!amountResult.success) return amountResult;
 
     return Result.ok(null);

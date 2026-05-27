@@ -5,6 +5,7 @@ export { AsyncRateLimiter, withRateLimit } from './rateLimit.js';
 export { AsyncNonceManager } from './nonceManager.js';
 export { sanitizeErrorMessage, extractUserMessage, createSafeError } from './errorSanitizer.js';
 export * from './inputValidators.js';
+export { toDecimal, toWei, quantizeToDisplay, Big, type DecimalInput } from './decimal.js';
 export { ProviderManager, type ProviderManagerConfig } from './providerManager.js';
 export { WebSocketManager, type WebSocketConfig, type ConnectionState, type MessageCallback } from './websocketManager.js';
 export * from './observability.js';

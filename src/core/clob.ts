@@ -10,7 +10,7 @@ import {
     validatePairFormat,
     validateOrderParams,
     validateOrderIdFormat,
-    validatePositiveFloat
+    validatePositiveNumber
 } from '../utils/inputValidators.js';
 
 export class CLOBClient extends BaseClient {
@@ -1184,12 +1184,12 @@ export class CLOBClient extends BaseClient {
                 return Result.fail(orderIdResult.error!);
             }
 
-            const priceResult = validatePositiveFloat(newPrice, 'newPrice');
+            const priceResult = validatePositiveNumber(newPrice, 'newPrice');
             if (!priceResult.success) {
                 return Result.fail(priceResult.error!);
             }
 
-            const amountResult = validatePositiveFloat(newAmount, 'newAmount');
+            const amountResult = validatePositiveNumber(newAmount, 'newAmount');
             if (!amountResult.success) {
                 return Result.fail(amountResult.error!);
             }
