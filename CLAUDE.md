@@ -286,6 +286,22 @@ removing the `prepare` script breaks `github:` installs — **don't**.
 - **Error sanitization is lossy**: regex stripping of file paths,
   URLs, and stack traces makes production debugging harder. Use
   `logLevel: 'debug'` locally to get full context.
+- **Decimal arithmetic uses Big.js, never float multiplication**:
+  human-readable amounts route through `toWei(value, decimals)` from
+  `src/utils/decimal.ts`, which evaluates
+  `BigInt(new Big(String(value)).times(new Big(10).pow(decimals)).toFixed(0, Big.roundDown))`.
+  Float multiplication like `BigInt(Math.floor(2933.0 * 10**18))`
+  silently drops 262144 wei and the contract rejects the order with
+  `T-TMDQ-01`. Big.js is pinned to an exact version; do not widen the
+  range. `Big` is re-exported from `src/utils` so callers can import
+  it without depending on the dep path directly.
+- **`validatePositiveNumber` accepts more than `number`**: signature
+  is `(value: unknown, paramName: string)` and accepts `number`,
+  numeric `string`, `bigint`, and `Big` instances. Booleans are
+  rejected explicitly so `true`/`false` cannot slip through as
+  `amount=1`/`amount=0`. The previous name `validatePositiveFloat`
+  has been removed in a clean break — no alias kept — so future
+  imports must use `validatePositiveNumber`.
 
 ---
 

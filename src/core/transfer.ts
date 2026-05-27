@@ -7,7 +7,7 @@ import { Result } from '../utils/result.js';
 import { withInstanceCache } from '../utils/cache.js';
 import {
     validateTokenSymbol,
-    validatePositiveFloat,
+    validatePositiveNumber,
     validateAddress,
     validateChainIdentifier
 } from '../utils/inputValidators.js';
@@ -174,7 +174,7 @@ export class TransferClient extends SwapClient {
             const tokenResult = validateTokenSymbol(token, 'token');
             if (!tokenResult.success) return Result.fail(tokenResult.error!);
 
-            const amountResult = validatePositiveFloat(amount, 'amount');
+            const amountResult = validatePositiveNumber(amount, 'amount');
             if (!amountResult.success) return Result.fail(amountResult.error!);
 
             if (!this.signer) {
@@ -249,7 +249,7 @@ export class TransferClient extends SwapClient {
             const tokenResult = validateTokenSymbol(token, 'token');
             if (!tokenResult.success) return Result.fail(tokenResult.error!);
 
-            const amountResult = validatePositiveFloat(amount, 'amount');
+            const amountResult = validatePositiveNumber(amount, 'amount');
             if (!amountResult.success) return Result.fail(amountResult.error!);
 
             if (!this.signer) {
@@ -379,7 +379,7 @@ export class TransferClient extends SwapClient {
             const tokenResult = validateTokenSymbol(token, 'token');
             if (!tokenResult.success) return Result.fail(tokenResult.error!);
 
-            const amountResult = validatePositiveFloat(amount, 'amount');
+            const amountResult = validatePositiveNumber(amount, 'amount');
             if (!amountResult.success) return Result.fail(amountResult.error!);
 
             if (!this.signer) {
@@ -487,7 +487,7 @@ export class TransferClient extends SwapClient {
             const tokenResult = validateTokenSymbol(token, 'token');
             if (!tokenResult.success) return Result.fail(tokenResult.error!);
 
-            const amountResult = validatePositiveFloat(amount, 'amount');
+            const amountResult = validatePositiveNumber(amount, 'amount');
             if (!amountResult.success) return Result.fail(amountResult.error!);
 
             const addressResult = validateAddress(toAddress, 'toAddress');
@@ -552,7 +552,7 @@ export class TransferClient extends SwapClient {
          * Add gas (withdraw native ALOT to wallet).
          */
         public async addGas(amount: number, waitForReceipt: boolean = true): Promise<Result<{ txHash: string; operation: string }>> {
-            const amountResult = validatePositiveFloat(amount, 'amount');
+            const amountResult = validatePositiveNumber(amount, 'amount');
             if (!amountResult.success) return Result.fail(amountResult.error!);
 
             const subDep = this._portfolioSubDeployment();
@@ -588,7 +588,7 @@ export class TransferClient extends SwapClient {
          * Remove gas (deposit native ALOT from wallet).
          */
         public async removeGas(amount: number, waitForReceipt: boolean = true): Promise<Result<{ txHash: string; operation: string }>> {
-            const amountResult = validatePositiveFloat(amount, 'amount');
+            const amountResult = validatePositiveNumber(amount, 'amount');
             if (!amountResult.success) return Result.fail(amountResult.error!);
 
             const subDep = this._portfolioSubDeployment();
