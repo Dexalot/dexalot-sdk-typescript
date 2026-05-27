@@ -320,6 +320,41 @@ removing the `prepare` script breaks `github:` installs — **don't**.
   and `['USDC', 'AVAX']` share a cache slot. Token symbols are also
   canonicalized through `normalizeToken` so casing variants and
   known aliases collapse.
+- **RFQ firm quotes arrive as `{success, quote: {...}}` envelopes**:
+  the backend wraps the executable quote in an outer envelope and
+  also uses `{success: false, reason: ...}` to signal soft failures
+  on HTTP 200. `_transformQuoteFromAPI` unwraps the envelope on the
+  inner shape; `getSwapQuote` detects envelope-layer failure BEFORE
+  the transform and returns `Result.fail(\`Cannot execute failed
+  quote: ${reason}\`)` so executeRFQSwap never operates on a
+  failure payload. Callers that hand a raw envelope to
+  `executeRFQSwap` are also fine — the same unwrap runs there.
+- **There is no `secureQuote` layer in real firm-quote responses**:
+  the executable signature and order live at the top level of the
+  inner quote dict (`quote.signature`, `quote.order`). The
+  `SwapQuote.secureQuote` field was removed in a clean break — any
+  code that read `secureQuote.data` / `secureQuote.order` is wrong
+  and must be ported to read `quote.signature` / `quote.order`.
+- **MainnetRFQ requires `msg.value == takerAmount` for native sells**:
+  when `order.takerAsset` is the zero address (case-insensitive),
+  the SDK sends `msg.value = takerAmount`; for ERC20 takers it
+  sends `msg.value = 0`. `_computeMsgValue` is the single source
+  of truth and is also passed to `simpleSwap.estimateGas` so the
+  estimator sees the same call shape the contract validates.
+  Calling `simpleSwap` without this hardware would revert with
+  `_checkValue` on any native sell.
+- **Failed-swap errors carry tx hash, block number, and revert reason**:
+  on `receipt.status !== 1` the error string is
+  `\`Transaction reverted: tx=0x..., block=N, reason=<reason>\``
+  with the `block=` and `reason=` segments conditionally appended
+  when each piece is available. The reason is recovered via
+  `_extractRevertReason`, which replays the tx as `eth_call` at the
+  reverting block and parses the node's `execution reverted: X`
+  message. Best-effort: returns `null` if the node can't replay.
+- **`rfq_pairs` fetch failures are logged at debug, not warn**:
+  chains without an RFQ deployment legitimately return 404 here, so
+  warning on every initialize would be noise. `_fetchRfqPairsForChain`
+  catches all failures and logs them at `debug`.
 - **All TRANSFER write paths route through `toWei`**: `deposit`,
   `withdraw`, `transferPortfolio`, `addGas`, `removeGas`, and
   `getDepositBridgeFee` all encode their user-supplied amount via
