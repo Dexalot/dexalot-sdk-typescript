@@ -1154,7 +1154,9 @@ export class TransferClient extends SwapClient {
         }
 
         public _getBridgeId(chainName: string, useLayerZero: boolean): number {
-            const isIcm = ICM_CHAINS.some(c => chainName.toLowerCase().includes(c.toLowerCase()));
+            const lower = chainName.toLowerCase();
+            const isIcm =
+                ICM_CHAINS.some(c => lower.includes(c.toLowerCase())) || lower.includes('gunz');
             if (isIcm && !useLayerZero) return ACCESS_ID.ICM;
             return ACCESS_ID.LZ;
         }
