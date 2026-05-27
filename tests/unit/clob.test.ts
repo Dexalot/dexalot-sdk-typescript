@@ -197,15 +197,55 @@ describe('CLOBClient', () => {
         it('should fetch and filter pairs', async () => {
              mockAxios.request.mockResolvedValue({
                  data: [
-                     { pair: 'AVAX/USDT', env: ENV.PROD_MULTI_SUBNET, mintrade_amnt: '0', maxtrade_amnt: '100', base: 'AVAX', quote: 'USDT', base_evmdecimals: 18, quote_evmdecimals: 6 },
+                     {
+                         pair: 'AVAX/USDT', env: ENV.PROD_MULTI_SUBNET,
+                         mintrade_amnt: '0', maxtrade_amnt: '100',
+                         base: 'AVAX', quote: 'USDT',
+                         base_evmdecimals: 18, quote_evmdecimals: 6,
+                         base_display_decimals: 4, quote_display_decimals: 4
+                     },
                      { pair: 'IGNORE/ME', env: 'dev' }
                  ]
              });
-             
+
              const result = await client.getClobPairs();
              expect(result.success).toBe(true);
              expect(client.pairs['AVAX/USDT']).toBeDefined();
              expect(client.pairs['IGNORE/ME']).toBeUndefined();
+        });
+
+        it('should drop pairs that lack display decimals and log a warning', async () => {
+             mockAxios.request.mockResolvedValue({
+                 data: [
+                     // Both display decimals missing -> dropped.
+                     { pair: 'BAD/ONE', env: ENV.PROD_MULTI_SUBNET, base: 'B1', quote: 'Q1', base_decimals: 18, quote_decimals: 6 },
+                     // Only base present -> dropped.
+                     { pair: 'BAD/TWO', env: ENV.PROD_MULTI_SUBNET, base: 'B2', quote: 'Q2', base_decimals: 18, quote_decimals: 6, base_display_decimals: 4 },
+                     // Both present (including 0, which is valid) -> kept.
+                     {
+                         pair: 'GOOD/ZERO', env: ENV.PROD_MULTI_SUBNET, base: 'G', quote: 'Z',
+                         base_decimals: 18, quote_decimals: 6,
+                         base_display_decimals: 0, quote_display_decimals: 0,
+                         mintrade_amnt: '0', maxtrade_amnt: '0'
+                     }
+                 ]
+             });
+             const warnSpy = jest.spyOn(client._logger, 'warn').mockImplementation();
+
+             const result = await client.getClobPairs();
+
+             expect(result.success).toBe(true);
+             expect(client.pairs['BAD/ONE']).toBeUndefined();
+             expect(client.pairs['BAD/TWO']).toBeUndefined();
+             expect(client.pairs['GOOD/ZERO']).toBeDefined();
+             expect(client.pairs['GOOD/ZERO'].base_display_decimals).toBe(0);
+             expect(client.pairs['GOOD/ZERO'].quote_display_decimals).toBe(0);
+             expect(warnSpy).toHaveBeenCalledTimes(2);
+             expect(warnSpy).toHaveBeenCalledWith(
+                 expect.stringContaining('BAD/ONE'),
+                 expect.objectContaining({ pair: 'BAD/ONE' })
+             );
+             warnSpy.mockRestore();
         });
 
         it('should handle API errors', async () => {
@@ -348,6 +388,51 @@ describe('CLOBClient', () => {
              const result = await client.addOrder({ pair: 'MISSING/PAIR', side: 'BUY', amount: 1, price: 10});
              expect(result.success).toBe(false);
              expect(result.error).toContain('API Fail');
+        });
+
+        it('rejects when amount has more decimals than the pair allows', async () => {
+            // AVAX/USDC fixture: base_display_decimals = 2
+            const result = await client.addOrder({
+                pair: 'AVAX/USDC', side: 'BUY', type: 'LIMIT',
+                amount: 0.123, price: 20,
+            });
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('amount');
+            expect(result.error).toContain('more than 2 decimals');
+            expect(mockContract.addNewOrder).not.toHaveBeenCalled();
+        });
+
+        it('rejects when price has more decimals than the pair allows', async () => {
+            // AVAX/USDC fixture: quote_display_decimals = 2
+            const result = await client.addOrder({
+                pair: 'AVAX/USDC', side: 'BUY', type: 'LIMIT',
+                amount: 10, price: 20.123,
+            });
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('price');
+            expect(result.error).toContain('more than 2 decimals');
+            expect(mockContract.addNewOrder).not.toHaveBeenCalled();
+        });
+
+        it('rejects when notional falls below the pair min_trade_amount', async () => {
+            // AVAX/USDC fixture: min_trade_amount = 1; 0.1 * 0.5 = 0.05
+            const result = await client.addOrder({
+                pair: 'AVAX/USDC', side: 'BUY', type: 'LIMIT',
+                amount: 0.5, price: 0.1,
+            });
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('below min_trade_amount');
+            expect(mockContract.addNewOrder).not.toHaveBeenCalled();
+        });
+
+        it('rejects when notional exceeds the pair max_trade_amount', async () => {
+            // AVAX/USDC fixture: max_trade_amount = 1000; 50 * 50 = 2500
+            const result = await client.addOrder({
+                pair: 'AVAX/USDC', side: 'BUY', type: 'LIMIT',
+                amount: 50, price: 50,
+            });
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('above max_trade_amount');
         });
     });
 
@@ -823,7 +908,7 @@ describe('CLOBClient', () => {
 
          it('should handle SELL side replacement', async () => {
              mockContract.cancelAddList.estimateGas = jest.fn().mockResolvedValue(100n);
-             
+
              const reps = [{ order_id: VALID_ORDER_ID, pair: 'AVAX/USDC', side: 'SELL', price: 10, amount: 10 }];
              const result = await client.cancelAddList(reps);
              expect(result.success).toBe(true);
@@ -832,6 +917,32 @@ describe('CLOBClient', () => {
              // callArgs[1][0] is the first tuple
              // Tuple: [id, pairId, price, qty, addr, side(1), ...]
              expect(callArgs[1][0][5]).toBe(1); // SideEnum 1 = SELL
+         });
+
+         it('rejects the whole batch when any replacement amount is over-precise', async () => {
+             mockContract.cancelAddList.estimateGas = jest.fn().mockResolvedValue(100n);
+
+             const reps = [
+                 { order_id: VALID_ORDER_ID, pair: 'AVAX/USDC', side: 'SELL', price: 10, amount: 0.123 },
+             ];
+             const result = await client.cancelAddList(reps);
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('more than 2 decimals');
+             expect(mockContract.cancelAddList).not.toHaveBeenCalled();
+         });
+
+         it('encodes priceWei as 0 when a replacement omits price (market-style)', async () => {
+             mockContract.cancelAddList.estimateGas = jest.fn().mockResolvedValue(100n);
+
+             // Bypass min_trade_amount=1 by using a pair fixture that has no min
+             client.pairs['AVAX/USDC'] = { ...client.pairs['AVAX/USDC'], min_trade_amount: 0, max_trade_amount: 0 };
+             const reps = [
+                 { order_id: VALID_ORDER_ID, pair: 'AVAX/USDC', side: 'SELL', price: 0, amount: 10 },
+             ];
+             const result = await client.cancelAddList(reps);
+             expect(result.success).toBe(true);
+             const callArgs = mockContract.cancelAddList.mock.calls[0];
+             expect(callArgs[1][0][2]).toBe(0n);  // priceWei
          });
     });
 
@@ -877,11 +988,11 @@ describe('CLOBClient', () => {
          });
 
          it('should handle missing price in addOrderList', async () => {
-             mockContract.addOrderList.mockResolvedValue({ 
+             mockContract.addOrderList.mockResolvedValue({
                  hash: '0xAddListHash',
                  wait: jest.fn().mockResolvedValue({ status: 1, hash: '0xAddListHash' })
              });
-             
+
              // MARKET orders don't require price, so price can be undefined
              const reqs: any[] = [
                  { pair: 'AVAX/USDC', side: 'BUY', type: 'MARKET', amount: 10, price: undefined }
@@ -891,6 +1002,17 @@ describe('CLOBClient', () => {
              // Price should default to 0 when undefined
              const callArgs = mockContract.addOrderList.mock.calls[0][0];
              expect(callArgs[0][2]).toBe(0n); // priceWei should be 0
+         });
+
+         it('rejects the whole batch when any order has over-precise amount', async () => {
+             const reqs: any[] = [
+                 { pair: 'AVAX/USDC', side: 'BUY', amount: 1, price: 20 },
+                 { pair: 'AVAX/USDC', side: 'SELL', amount: 0.123, price: 25 },  // 3 decimals > 2
+             ];
+             const result = await client.addOrderList(reqs);
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('more than 2 decimals');
+             expect(mockContract.addOrderList).not.toHaveBeenCalled();
          });
     });
 
@@ -932,6 +1054,17 @@ describe('CLOBClient', () => {
                const result = await client.replaceOrder(VALID_ORDER_ID, 21, -1);
                expect(result.success).toBe(false);
                expect(result.error).toContain('newAmount');
+          });
+
+          it('rejects replacement when amount has more decimals than pair allows', async () => {
+               const mockData = makeContractOrderRow({ internalOrderId: VALID_ORDER_ID, clientOrderId: VALID_CLIENT_ID, traderAddress: mockAddress });
+               mockContract.getOrder.mockResolvedValue(mockData);
+
+               // AVAX/USDC fixture: base_display_decimals = 2; 0.123 has 3
+               const result = await client.replaceOrder(VALID_ORDER_ID, 21, 0.123);
+               expect(result.success).toBe(false);
+               expect(result.error).toContain('more than 2 decimals');
+               expect(mockContract.cancelReplaceOrder).not.toHaveBeenCalled();
           });
 
           it('should return error when getOrder fails in replaceOrder', async () => {
@@ -1483,6 +1616,10 @@ describe('CLOBClient', () => {
                         quote: 'TOKEN',
                         base_decimals: 18,
                         quote_decimals: 6,
+                        // Display decimals must be present (otherwise the pair
+                        // would be dropped at ingest).
+                        base_display_decimals: 4,
+                        quote_display_decimals: 4,
                         // No min_trade_amount, max_trade_amount, mintrade_amnt, etc.
                     }
                 ]
@@ -1593,6 +1730,8 @@ describe('CLOBClient', () => {
                         quote: 'USDC',
                         base_evmdecimals: 18,
                         quote_evmdecimals: 6,
+                        base_display_decimals: 4,
+                        quote_display_decimals: 4,
                         mintrade_amnt: '1',
                         maxtrade_amnt: '10',
                     },

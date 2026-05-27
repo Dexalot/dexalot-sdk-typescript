@@ -1,5 +1,12 @@
 import Big from 'big.js';
-import { toDecimal, toWei, quantizeToDisplay } from '../../src/utils/decimal';
+import {
+    toDecimal,
+    toWei,
+    quantizeToDisplay,
+    checkDisplayPrecision,
+    checkTradeAmountBounds,
+    DISPLAY_PRECISION_TOLERANCE,
+} from '../../src/utils/decimal';
 
 describe('decimal utilities', () => {
     describe('toDecimal', () => {
@@ -105,6 +112,92 @@ describe('decimal utilities', () => {
         it('throws on non-integer or negative displayDecimals', () => {
             expect(() => quantizeToDisplay(1, -1)).toThrow(/non-negative integer/);
             expect(() => quantizeToDisplay(1, 2.5)).toThrow(/non-negative integer/);
+        });
+    });
+
+    describe('checkDisplayPrecision', () => {
+        it('accepts values already at display precision', () => {
+            const r = checkDisplayPrecision('0.1234', 4, 'amount');
+            expect(r.success).toBe(true);
+            expect(r.data!.toString()).toBe('0.1234');
+        });
+
+        it('rejects values with more precision than allowed', () => {
+            const r = checkDisplayPrecision(0.123456789, 4, 'amount');
+            expect(r.success).toBe(false);
+            expect(r.error).toContain('amount');
+            expect(r.error).toContain('more than 4 decimals');
+        });
+
+        it('accepts float-representation noise within tolerance', () => {
+            // 0.1 + 0.2 produces 0.30000000000000004 due to binary float
+            // representation; this residual (~1e-17) is well below the 1e-10
+            // tolerance and should be snapped to 0.3 at 1 display decimal.
+            const r = checkDisplayPrecision(0.1 + 0.2, 1, 'amount');
+            expect(r.success).toBe(true);
+            expect(r.data!.toString()).toBe('0.3');
+        });
+
+        it('zero is always accepted regardless of display decimals', () => {
+            const r = checkDisplayPrecision(0, 8, 'amount');
+            expect(r.success).toBe(true);
+            expect(r.data!.eq(0)).toBe(true);
+        });
+
+        it('throws on invalid displayDecimals', () => {
+            expect(() => checkDisplayPrecision(1, -1, 'amount')).toThrow(/non-negative integer/);
+            expect(() => checkDisplayPrecision(1, 2.5, 'amount')).toThrow(/non-negative integer/);
+        });
+
+        it('exposes a stable tolerance constant', () => {
+            expect(DISPLAY_PRECISION_TOLERANCE.toString()).toBe('1e-10');
+        });
+    });
+
+    describe('checkTradeAmountBounds', () => {
+        const pairName = 'AVAX/USDC';
+
+        it('skips entirely when price is null (market order)', () => {
+            const r = checkTradeAmountBounds(null, new Big('1'), 10, 0, pairName);
+            expect(r.success).toBe(true);
+        });
+
+        it('accepts when notional is within bounds', () => {
+            const price = new Big('10');
+            const amount = new Big('2');
+            // notional = 20; bounds = [5, 100]
+            const r = checkTradeAmountBounds(price, amount, 5, 100, pairName);
+            expect(r.success).toBe(true);
+        });
+
+        it('rejects when notional is below min_trade_amount', () => {
+            const price = new Big('1');
+            const amount = new Big('0.5');
+            // notional = 0.5; min = 10
+            const r = checkTradeAmountBounds(price, amount, 10, 1000, pairName);
+            expect(r.success).toBe(false);
+            expect(r.error).toContain('below min_trade_amount');
+            expect(r.error).toContain('AVAX/USDC');
+        });
+
+        it('rejects when notional is above max_trade_amount', () => {
+            const price = new Big('10');
+            const amount = new Big('200');
+            // notional = 2000; max = 1000
+            const r = checkTradeAmountBounds(price, amount, 0, 1000, pairName);
+            expect(r.success).toBe(false);
+            expect(r.error).toContain('above max_trade_amount');
+        });
+
+        it('treats min=0 as "no bound"', () => {
+            const r = checkTradeAmountBounds(new Big('0.001'), new Big('0.001'), 0, 0, pairName);
+            expect(r.success).toBe(true);
+        });
+
+        it('treats max=0 as "no bound"', () => {
+            // Huge notional but max=0 means uncapped.
+            const r = checkTradeAmountBounds(new Big('1e18'), new Big('1e18'), 0, 0, pairName);
+            expect(r.success).toBe(true);
         });
     });
 });

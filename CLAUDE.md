@@ -295,6 +295,37 @@ removing the `prepare` script breaks `github:` installs — **don't**.
   `T-TMDQ-01`. Big.js is pinned to an exact version; do not widen the
   range. `Big` is re-exported from `src/utils` so callers can import
   it without depending on the dep path directly.
+- **All four CLOB write paths route through `_normalizeOrderAmounts`**:
+  `addOrder`, `addOrderList`, `replaceOrder`, and `cancelAddList`
+  share a single normalization helper that runs the display-decimal
+  REJECT-with-tolerance gate (`checkDisplayPrecision`) on price and
+  amount, then the quote-token notional bounds check
+  (`checkTradeAmountBounds`) against the pair's `min_trade_amount`
+  / `max_trade_amount`. After normalization, encoding to wei uses
+  `toWei(value, decimals)`. Do not reintroduce
+  `parseFloat(value.toFixed(N))` rounding in any write path — that is
+  silent slippage (a stop at 99.99 silently becoming 99.9).
+- **Display-decimal precision uses REJECT-with-tolerance**: a `1e-10`
+  tolerance band absorbs binary-float-representation noise (e.g.
+  `0.1 + 0.2 = 0.30000000000000004` snaps to `0.3` at 1 display
+  decimal). Genuine over-precision is rejected with a clear error
+  message — callers must round explicitly. The constant is exported
+  as `DISPLAY_PRECISION_TOLERANCE`.
+- **Pairs without display decimals are dropped at ingest**: the
+  `getClobPairs` loop excludes any pair whose API record lacks
+  `base_display_decimals` or `quote_display_decimals` and logs a
+  WARNING via the observability logger. Downstream callers see "pair
+  not found". `0` is a valid display-decimals value — the check uses
+  `== null` to admit it. Display decimals are contractual; defaulting
+  them masks the contract's `T-TMDQ-01` rejection downstream. The
+  `Pair` type reflects this — `base_display_decimals` and
+  `quote_display_decimals` are required, not optional.
+- **`min_trade_amount` / `max_trade_amount` are enforced client-side**:
+  quote-token-denominated bounds checked by `checkTradeAmountBounds`
+  inside `_normalizeOrderAmounts`. A bound of `0` means "no bound"
+  (some pairs legitimately omit). When `price` is `null` (market
+  order with `addOrderList`), the bounds check is skipped — there is
+  no client-side notional to compute.
 - **`validatePositiveNumber` accepts more than `number`**: signature
   is `(value: unknown, paramName: string)` and accepts `number`,
   numeric `string`, `bigint`, and `Big` instances. Booleans are
