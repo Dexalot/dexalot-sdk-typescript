@@ -79,6 +79,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Pre-publish CVE gates: refuse to ship a tag that introduces
+      # known high-severity advisories. Mirrors the Python SDK's
+      # `pip-audit --strict` in `pypi.yml`.
+      - name: npm audit (high+ severity gate)
+        run: npm audit --audit-level=high
+
+      - name: OSV scanner
+        uses: google/osv-scanner-action/osv-scanner-action@v2.1.0
+        with:
+          scan-args: |
+            --lockfile=package-lock.json
+
+      - name: Type check
+        run: npx tsc --noEmit -p tsconfig.build.json
+
+      - name: Unit tests with 100% coverage gate
+        run: npx jest --ci tests/unit
+
       - name: Build distributions
         run: npm run build
 

@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly Monday 12:00 UTC. Catches dependency drift and new CVEs
+    # against an otherwise quiet main.
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Quality (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20.x", "22.x"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm exec tsc --noEmit -p tsconfig.build.json
+
+      - name: Unit tests with 100% coverage gate
+        # Coverage threshold is enforced in jest.config.js; --ci sets
+        # appropriate CI defaults (no watch, fail on snapshot drift).
+        run: pnpm exec jest --ci tests/unit
+
+      - name: pnpm audit (high+ severity gate)
+        run: pnpm audit --audit-level=high
+
+      - name: OSV scanner
+        # Cross-checks pnpm-lock.yaml against the OSV CVE database; this
+        # catches advisories that have not yet propagated to npm's
+        # vulnerability feed.
+        uses: google/osv-scanner-action/osv-scanner-action@v2.1.0
+        with:
+          scan-args: |
+            --lockfile=pnpm-lock.yaml

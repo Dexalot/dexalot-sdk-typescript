@@ -171,22 +171,29 @@ there are no locks or async waits. Instantiated with
 
 ## Dev Workflow
 
-- **Package manager**: `pnpm` — preferred. `npm ci` is what CI runs,
-  `yarn` also works but is not tested.
-- **Node version**: 22 (CI runner pin). Older Node versions may work
-  locally but are not validated.
+- **Package manager**: `pnpm` — preferred. Both `pnpm-lock.yaml` and
+  `package-lock.json` are committed; the release workflow uses
+  `npm ci` from `package-lock.json`, day-to-day CI uses `pnpm
+  install --frozen-lockfile`. Keep both lockfiles in sync after
+  dependency changes (run `pnpm install` then `npm install`).
+- **Node version**: `engines.node >= 20`. CI matrices against
+  Node 20 and 22; the release workflow pins Node 22.
 - **TypeScript**: `5.9.3`, pinned exactly. Strict mode enabled.
 - **Setup**: `pnpm install && pnpm build`.
 - **Test**: `pnpm test` (all) / `pnpm test:unit` (unit, fast) /
-  `pnpm test:int` (integration, requires live env).
-- **Build**: `pnpm build` (= `tsc -p tsconfig.build.json` →
-  `dist/`). `tsconfig.build.json` excludes tests; `tsconfig.json` is
-  the editor config.
-- **Types**: `tsc` via the build is the type check. No `mypy`
-  equivalent is needed — strict TypeScript covers it.
-- **Lint/format**: no ESLint or Prettier config in-repo. Rely on
-  `tsc --strict` and editor formatting. (This is a real gap vs the
-  Python SDK's `ruff`; adding ESLint later is a candidate.)
+  `pnpm test:int` (integration, requires live env). The unit suite
+  enforces **100% line / branch / function / statement coverage** via
+  `coverageThreshold` in `jest.config.js`; any drop fails CI.
+- **Type check**: `pnpm typecheck` (= `tsc --noEmit`). The build
+  config (`tsc -p tsconfig.build.json`) is what CI runs and what
+  the release workflow runs pre-publish — it excludes the test
+  files and produces 0 errors.
+- **Coverage**: `pnpm cov` (= `jest tests/unit --coverage`).
+- **Audit**: `pnpm audit:high` (= `pnpm audit --audit-level=high`).
+- **Lint/format**: no ESLint or Prettier config in-repo yet. Rely
+  on `tsc --strict` and editor formatting. Adding ESLint +
+  Prettier with the existing style is tracked as a follow-up
+  rather than rolled into this round of parity work.
 - **Version**: `pnpm run version:validate` / `pnpm run version:bump:patch`
   — syncs `package.json`, `VERSION`, and `src/version.ts` via
   `scripts/version_manager.mjs`.
@@ -214,6 +221,37 @@ removing the `prepare` script breaks `github:` installs — **don't**.
   env var is added.
 - Secrets vault env: `DEXALOT_SECRETS_VAULT_KEY` (Fernet key),
   `DEXALOT_SECRETS_VAULT_PATH` (default `~/.dexalot/secrets_vault.json`).
+
+---
+
+## CI Workflow
+
+`.github/workflows/ci.yml` runs on every PR, every push to `main`, a
+weekly Monday 12:00 UTC cron, and `workflow_dispatch`. The job
+matrices against Node 20 and 22 (fail-fast off).
+
+**Steps, in order:**
+
+1. **Type check** — `tsc --noEmit -p tsconfig.build.json`. The build
+   config excludes test files, so this gate is clean (the loose
+   editor-config `tsconfig.json` has known test-only errors that
+   pre-date the parity work).
+2. **Unit tests with coverage gate** — `jest --ci tests/unit`. The
+   100% line/branch/function/statement threshold is enforced by
+   `coverageThreshold` in `jest.config.js`; any drop fails CI.
+3. **`pnpm audit --audit-level=high`** — refuse high-severity
+   advisories against `pnpm-lock.yaml`.
+4. **OSV scanner** — cross-checks `pnpm-lock.yaml` against the OSV
+   CVE database (catches advisories that haven't propagated to npm's
+   feed yet).
+
+**Permissions:** `contents: read` only. **Concurrency:** in-progress
+runs for the same ref are cancelled when a new push lands.
+
+ESLint, Prettier, and a dedicated SAST step are intentionally **not**
+in the pipeline yet; they're a follow-up rather than a parity
+blocker. The Python SDK's `ruff`/`bandit` gates fill that role on
+the other side.
 
 ---
 
@@ -447,6 +485,14 @@ attestation.
    (stricter than the Python SDK's equivalent workflow, and added
    after the 2026-04-06 iteration uncovered the need).
 3. Tag name must equal `v{package.json version}`.
+4. `npm audit --audit-level=high` — refuse to publish a tag that
+   would introduce known high-severity advisories.
+5. OSV scanner against `package-lock.json` — cross-checks the npm
+   advisory feed.
+6. `tsc --noEmit -p tsconfig.build.json` — strict typecheck on the
+   build set (test files excluded).
+7. `jest --ci tests/unit` — 100% coverage gate (enforced by
+   `coverageThreshold` in `jest.config.js`).
 
 Steps:
 
