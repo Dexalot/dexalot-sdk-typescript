@@ -288,7 +288,9 @@ export class TransferClient extends SwapClient {
                     const signerAddress = await this.signer!.getAddress();
                     
                     let tx: TransactionResponse;
-                    
+                    let allowanceGrantedToken: string | null = null;
+                    let allowanceGrantedRunner: any = null;
+
                     if (token === nativeSymbol) {
                         const gasEst = await contract.depositNative.estimateGas(signerAddress, bridgeId, { value: amountWei + bridgeFee });
                         const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
@@ -301,8 +303,11 @@ export class TransferClient extends SwapClient {
                         }
 
                         const mainnetRunner = contract.runner;
-                        await this._ensureAllowance(tokenAddr, await contract.getAddress(), amountWei, mainnetRunner);
-                        
+                        const spender = await contract.getAddress();
+                        await this._ensureAllowance(tokenAddr, spender, amountWei, mainnetRunner);
+                        allowanceGrantedToken = tokenAddr;
+                        allowanceGrantedRunner = mainnetRunner;
+
                         const gasEst = await contract.depositToken.estimateGas(
                             signerAddress,
                             symbolBytes,
@@ -312,18 +317,43 @@ export class TransferClient extends SwapClient {
                         );
                         const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
 
-                        tx = await contract.depositToken(
-                            signerAddress,
-                            symbolBytes,
-                            amountWei,
-                            bridgeId,
-                            { value: bridgeFee, gasLimit }
-                        );
+                        try {
+                            tx = await contract.depositToken(
+                                signerAddress,
+                                symbolBytes,
+                                amountWei,
+                                bridgeId,
+                                { value: bridgeFee, gasLimit }
+                            );
+                        } catch (txError) {
+                            // Best-effort allowance revoke. Swallow secondary errors so the
+                            // caller sees the original tx failure, not the revoke failure.
+                            try {
+                                await this._revokeAllowance(allowanceGrantedToken, spender, allowanceGrantedRunner);
+                            } catch (revokeError) {
+                                this._logger.debug('Best-effort allowance revoke failed after deposit tx error', {
+                                    token,
+                                    error: String(revokeError),
+                                });
+                            }
+                            throw txError;
+                        }
                     }
-                    
+
                     if (waitForReceipt) {
                         const receipt = await tx.wait();
                         if (!receipt || receipt.status !== 1) {
+                            if (allowanceGrantedToken) {
+                                const spender = await contract.getAddress();
+                                try {
+                                    await this._revokeAllowance(allowanceGrantedToken, spender, allowanceGrantedRunner);
+                                } catch (revokeError) {
+                                    this._logger.debug('Best-effort allowance revoke failed after deposit revert', {
+                                        token,
+                                        error: String(revokeError),
+                                    });
+                                }
+                            }
                             return Result.fail("Transaction reverted");
                         }
                         return Result.ok({ txHash: receipt.hash, operation: 'deposit' });
@@ -376,10 +406,15 @@ export class TransferClient extends SwapClient {
                     const symbolBytes = Utils.toBytes32(token);
                     const signerAddress = await this.signer!.getAddress();
 
-                    const subnetTokenAddr = this.tokenData[token]?.[this.subnetEnv]?.address; 
+                    const subnetTokenAddr = this.tokenData[token]?.[this.subnetEnv]?.address;
+                    let allowanceGrantedToken: string | null = null;
+                    let allowanceGrantedRunner: any = null;
+                    const spender = await contract.getAddress();
                     if (subnetTokenAddr) {
                         const subnetRunner = contract.runner;
-                        await this._ensureAllowance(subnetTokenAddr, await contract.getAddress(), amountWei, subnetRunner);
+                        await this._ensureAllowance(subnetTokenAddr, spender, amountWei, subnetRunner);
+                        allowanceGrantedToken = subnetTokenAddr;
+                        allowanceGrantedRunner = subnetRunner;
                     }
 
                     const gasEst = await contract.withdrawToken.estimateGas(
@@ -391,18 +426,43 @@ export class TransferClient extends SwapClient {
                     );
                     const gasLimit = BigInt(Math.floor(Number(gasEst) * DEFAULTS.GAS_BUFFER));
 
-                    const tx = await contract.withdrawToken(
-                        signerAddress,
-                        symbolBytes,
-                        amountWei,
-                        bridgeId,
-                        destChainId,
-                        { gasLimit }
-                    );
-                    
+                    let tx: TransactionResponse;
+                    try {
+                        tx = await contract.withdrawToken(
+                            signerAddress,
+                            symbolBytes,
+                            amountWei,
+                            bridgeId,
+                            destChainId,
+                            { gasLimit }
+                        );
+                    } catch (txError) {
+                        if (allowanceGrantedToken) {
+                            try {
+                                await this._revokeAllowance(allowanceGrantedToken, spender, allowanceGrantedRunner);
+                            } catch (revokeError) {
+                                this._logger.debug('Best-effort allowance revoke failed after withdraw tx error', {
+                                    token,
+                                    error: String(revokeError),
+                                });
+                            }
+                        }
+                        throw txError;
+                    }
+
                     if (waitForReceipt) {
                         const receipt = await tx.wait();
                         if (!receipt || receipt.status !== 1) {
+                            if (allowanceGrantedToken) {
+                                try {
+                                    await this._revokeAllowance(allowanceGrantedToken, spender, allowanceGrantedRunner);
+                                } catch (revokeError) {
+                                    this._logger.debug('Best-effort allowance revoke failed after withdraw revert', {
+                                        token,
+                                        error: String(revokeError),
+                                    });
+                                }
+                            }
                             return Result.fail("Transaction reverted");
                         }
                         return Result.ok({ txHash: receipt.hash, operation: 'withdraw' });
@@ -994,5 +1054,20 @@ export class TransferClient extends SwapClient {
                 const tx = await contract.approve(spender, MaxUint256);
                 await tx.wait();
             }
+        }
+
+        /**
+         * Unconditionally set ERC20 allowance for `spender` to 0. Used as a
+         * best-effort cleanup when a deposit/withdraw transaction reverts after
+         * `_ensureAllowance` has already granted `MaxUint256` — leaving the
+         * granted allowance in place would expose the user to a stale approval.
+         * Callers wrap this in their own try/catch; secondary failures must be
+         * logged at debug and never override the original transaction error.
+         */
+        public async _revokeAllowance(token: string, spender: string, runner?: any) {
+            const signerToUse = runner || this.signer;
+            const contract = new Contract(token, ERC20_ABI, signerToUse);
+            const tx = await contract.approve(spender, 0n);
+            await tx.wait();
         }
 }

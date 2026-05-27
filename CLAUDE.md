@@ -202,10 +202,34 @@ removing the `prepare` script breaks `github:` installs — **don't**.
 - **Package name is scoped**: `@dexalot/dexalot-sdk` on NPM, not
   bare `dexalot-sdk`. The bare name was never registered; any older
   docs showing the bare name are typos.
-- **Private key in config**: `privateKey` is passed at config time
-  and read when constructing the ethers signer; the config field is
-  not zeroed afterward (unlike Python's `Account` flow). Passing a
-  pre-built signer via the advanced path is the tighter option.
+- **Private key in config is cleared after Wallet construction**:
+  `BaseClient._setupSignerFromPrivateKey()` constructs the ethers
+  `Wallet` inside a `try/finally` and unconditionally sets
+  `config.privateKey = undefined` afterward — in both the success
+  and the throwing branches. Pre-built-signer constructor branch
+  never reads `config.privateKey`, so it is left untouched. Do not
+  reintroduce `new Wallet(this.config.privateKey)` directly in the
+  constructor — always route through the helper.
+- **HTTP method allowlist on `_apiCall`**: the parameter is typed as
+  `'get' | 'post' | 'put' | 'delete'`, but `_apiCall` *also* runtime-
+  checks `method.toLowerCase()` against a module-level Set before
+  any axios call. Defense in depth against `as any` bypasses and
+  the type-erased `axios.request({ method })` shape. Case-insensitive.
+- **RPC dispatch must stay closure-typed, not string-based**: RPC
+  calls go through `withRpcFailover(chain, p => p.method())`. The
+  provider is a `JsonRpcProvider` with a typed surface and there is
+  no `provider[methodName]()` dispatch. Future RPC code MUST follow
+  this closure pattern — do NOT introduce dynamic property access
+  on the provider; doing so would re-open the door to a string-name
+  attack surface that the typed closure inherently prevents.
+- **ERC20 allowance revoke on tx failure**: when `_ensureAllowance`
+  grants `MaxUint256` and the subsequent `depositToken` /
+  `withdrawToken` then reverts (rejected promise OR `receipt.status
+  !== 1`), the deposit/withdraw paths call `_revokeAllowance` as a
+  best-effort cleanup. The secondary revoke is itself wrapped in a
+  try/catch so a revoke failure never overrides the original tx
+  error — the original error wins. Logged at `debug` via the
+  observability logger.
 - **Cache key generation**: `${keyPrefix}:${JSON.stringify(args)}`.
   **`this` is captured as `args[0]` when methods go through
   `withCache`**, but `withInstanceCache` takes the instance

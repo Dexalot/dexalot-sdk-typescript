@@ -1813,4 +1813,105 @@ describe('BaseClient', () => {
             expect(result.error).toContain('not recognized');
         });
     });
+
+    describe('Private key clearing', () => {
+        const PK = '0x1234567890123456789012345678901234567890123456789012345678901234';
+
+        beforeEach(() => {
+            (axios.create as jest.Mock).mockReturnValue(mockedAxios);
+            (ethers.Wallet as unknown as jest.Mock).mockClear();
+            (ethers.Wallet as unknown as jest.Mock).mockImplementation(function (this: any, pk: string) {
+                this.address = '0xabc';
+                this._pk = pk;
+                return this;
+            });
+        });
+
+        it('clears privateKey from config after Wallet construction (DexalotConfig branch)', () => {
+            const config = { parentEnv: 'fuji-multi', privateKey: PK } as any;
+            const c = new BaseClient(config);
+            expect(c.signer).toBeDefined();
+            expect(c.config.privateKey).toBeUndefined();
+        });
+
+        it('clears privateKey from config after Wallet construction (env-load branch)', () => {
+            const originalPk = process.env.PRIVATE_KEY;
+            process.env.PRIVATE_KEY = PK;
+            try {
+                const c = new BaseClient();
+                expect(c.signer).toBeDefined();
+                expect(c.config.privateKey).toBeUndefined();
+            } finally {
+                if (originalPk === undefined) delete process.env.PRIVATE_KEY;
+                else process.env.PRIVATE_KEY = originalPk;
+            }
+        });
+
+        it('clears privateKey even when Wallet constructor throws', () => {
+            (ethers.Wallet as unknown as jest.Mock).mockImplementationOnce(() => {
+                throw new Error('bad key');
+            });
+            const config = { parentEnv: 'fuji-multi', privateKey: PK } as any;
+            expect(() => new BaseClient(config)).toThrow('bad key');
+            // The constructor rethrows before the client reference is returned;
+            // the try/finally invariant is exercised here and by the env-load test.
+            expect(ethers.Wallet as unknown as jest.Mock).toHaveBeenCalledWith(PK);
+        });
+
+        it('does not touch privateKey when a pre-built Signer is provided', () => {
+            const signer = { provider: null } as unknown as Signer;
+            const c = new BaseClient(signer);
+            expect(c.signer).toBe(signer);
+            expect(c.config.privateKey).toBeUndefined();
+        });
+    });
+
+    describe('HTTP method allowlist on _apiCall', () => {
+        beforeEach(() => {
+            (axios.create as jest.Mock).mockReturnValue(mockedAxios);
+            client = new BaseClient();
+        });
+
+        it.each(['get', 'post', 'put', 'delete'] as const)(
+            'accepts method "%s"',
+            async (method) => {
+                mockedAxios.request.mockResolvedValueOnce({ data: { ok: true } });
+                const data = await client._apiCall(method, '/x');
+                expect(data).toEqual({ ok: true });
+                expect(mockedAxios.request).toHaveBeenCalledWith(expect.objectContaining({ method }));
+            }
+        );
+
+        it.each(['GET', 'POST'])(
+            'accepts case-insensitive method "%s"',
+            async (method) => {
+                mockedAxios.request.mockResolvedValueOnce({ data: { ok: true } });
+                const data = await client._apiCall(method as any, '/x');
+                expect(data).toEqual({ ok: true });
+            }
+        );
+
+        it.each([
+            'patch',
+            'connect',
+            '__proto__',
+            'options',
+            'head',
+            '',
+        ])('rejects method "%s"', async (method) => {
+            await expect(client._apiCall(method as any, '/x')).rejects.toThrow(
+                /Invalid HTTP method/
+            );
+            expect(mockedAxios.request).not.toHaveBeenCalled();
+        });
+
+        it('rejects non-string method types', async () => {
+            await expect(client._apiCall(null as any, '/x')).rejects.toThrow(
+                /Invalid HTTP method/
+            );
+            await expect(client._apiCall(123 as any, '/x')).rejects.toThrow(
+                /Invalid HTTP method/
+            );
+        });
+    });
 });

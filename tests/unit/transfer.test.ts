@@ -1321,4 +1321,136 @@ describe('TransferClient', () => {
         });
     });
 
+    describe('ERC20 allowance revoke on tx failure', () => {
+        it('revokes allowance when depositToken throws', async () => {
+            const txError = new Error('depositToken reverted');
+            mockContract.depositToken.mockRejectedValueOnce(txError);
+
+            const result = await client.deposit('USDT', 10, 'Avalanche');
+
+            expect(result.success).toBe(false);
+            const approveCalls = (mockContract.approve as jest.Mock).mock.calls;
+            const revokeCall = approveCalls.find(args => args[1] === 0n);
+            expect(revokeCall).toBeDefined();
+            expect(revokeCall![0]).toBe('0xContractAddress');
+        });
+
+        it('revokes allowance when deposit receipt reports revert (status=0)', async () => {
+            mockContract.depositToken.mockResolvedValueOnce({
+                hash: '0xRevertedHash',
+                wait: jest.fn().mockResolvedValue({ status: 0 }),
+            });
+
+            const result = await client.deposit('USDT', 10, 'Avalanche');
+
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Transaction reverted');
+            const approveCalls = (mockContract.approve as jest.Mock).mock.calls;
+            expect(approveCalls.some(args => args[1] === 0n)).toBe(true);
+        });
+
+        it('does not call approve(_, 0n) when native deposit fails (no allowance was granted)', async () => {
+            mockContract.depositNative.estimateGas.mockRejectedValueOnce(new Error('native fail'));
+
+            const result = await client.deposit('AVAX', 10, 'Avalanche');
+
+            expect(result.success).toBe(false);
+            const approveCalls = (mockContract.approve as jest.Mock).mock.calls;
+            expect(approveCalls.some(args => args[1] === 0n)).toBe(false);
+        });
+
+        it('original deposit tx error wins when secondary revoke also fails', async () => {
+            const txError = new Error('original depositToken error');
+            mockContract.depositToken.mockRejectedValueOnce(txError);
+            (mockContract.approve as jest.Mock).mockImplementation((_spender: string, amount: bigint) => {
+                if (amount === 0n) return Promise.reject(new Error('revoke failure'));
+                return Promise.resolve({ wait: jest.fn().mockResolvedValue({}) });
+            });
+
+            const result = await client.deposit('USDT', 10, 'Avalanche');
+
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('original depositToken error');
+            expect(result.error).not.toContain('revoke failure');
+        });
+
+        it('revokes allowance when withdrawToken throws', async () => {
+            const txError = new Error('withdrawToken reverted');
+            mockContract.withdrawToken.mockRejectedValueOnce(txError);
+
+            const result = await client.withdraw('AVAX', 10, 'Destination');
+
+            expect(result.success).toBe(false);
+            const approveCalls = (mockContract.approve as jest.Mock).mock.calls;
+            expect(approveCalls.some(args => args[1] === 0n)).toBe(true);
+        });
+
+        it('does not call approve(_, 0n) when no subnet token address exists', async () => {
+            // Drop the subnet token entry so the withdraw allowance branch is skipped
+            delete client.tokenData['AVAX'][ENV.PROD_MULTI_SUBNET];
+            mockContract.withdrawToken.mockRejectedValueOnce(new Error('withdraw fail'));
+
+            const result = await client.withdraw('AVAX', 10, 'Destination');
+
+            expect(result.success).toBe(false);
+            const approveCalls = (mockContract.approve as jest.Mock).mock.calls;
+            expect(approveCalls.some(args => args[1] === 0n)).toBe(false);
+        });
+
+        it('swallows secondary revoke failure when deposit receipt reverts', async () => {
+            mockContract.depositToken.mockResolvedValueOnce({
+                hash: '0xRevertedHash',
+                wait: jest.fn().mockResolvedValue({ status: 0 }),
+            });
+            (mockContract.approve as jest.Mock).mockImplementation((_spender: string, amount: bigint) => {
+                if (amount === 0n) return Promise.reject(new Error('revoke failure'));
+                return Promise.resolve({ wait: jest.fn().mockResolvedValue({}) });
+            });
+
+            const result = await client.deposit('USDT', 10, 'Avalanche');
+
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Transaction reverted');
+            expect(result.error).not.toContain('revoke failure');
+        });
+
+        it('original withdraw tx error wins when secondary revoke also fails', async () => {
+            const txError = new Error('original withdrawToken error');
+            mockContract.withdrawToken.mockRejectedValueOnce(txError);
+            (mockContract.approve as jest.Mock).mockImplementation((_spender: string, amount: bigint) => {
+                if (amount === 0n) return Promise.reject(new Error('revoke failure'));
+                return Promise.resolve({ wait: jest.fn().mockResolvedValue({}) });
+            });
+
+            const result = await client.withdraw('AVAX', 10, 'Destination');
+
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('original withdrawToken error');
+            expect(result.error).not.toContain('revoke failure');
+        });
+
+        it('_revokeAllowance falls back to this.signer when no runner is provided', async () => {
+            await (client as any)._revokeAllowance('0xtok', '0xspender');
+            expect(Contract).toHaveBeenCalledWith('0xtok', expect.any(Array), mockSigner);
+            expect(mockContract.approve).toHaveBeenCalledWith('0xspender', 0n);
+        });
+
+        it('swallows secondary revoke failure when withdraw receipt reverts', async () => {
+            mockContract.withdrawToken.mockResolvedValueOnce({
+                hash: '0xRevertedHash',
+                wait: jest.fn().mockResolvedValue({ status: 0 }),
+            });
+            (mockContract.approve as jest.Mock).mockImplementation((_spender: string, amount: bigint) => {
+                if (amount === 0n) return Promise.reject(new Error('revoke failure'));
+                return Promise.resolve({ wait: jest.fn().mockResolvedValue({}) });
+            });
+
+            const result = await client.withdraw('AVAX', 10, 'Destination');
+
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Transaction reverted');
+            expect(result.error).not.toContain('revoke failure');
+        });
+    });
+
 });

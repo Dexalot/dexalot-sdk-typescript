@@ -16,6 +16,13 @@ import { getLogger, Logger, configureLogging, LogLevel, trackOperation } from '.
 import { normalizeTokenSymbol, normalizeTradingPair } from '../utils/tokenNormalization.js';
 import { ChainResolver, ResolvedChain } from '../utils/chainResolver.js';
 
+/**
+ * HTTP methods accepted by `_apiCall`. The compile-time union on the parameter
+ * is the primary guard; this runtime allowlist is defense-in-depth against
+ * `as any` bypasses and the type-erased `axios.request({ method })` call below.
+ */
+const ALLOWED_HTTP_METHODS = new Set(['get', 'post', 'put', 'delete']);
+
 export class BaseClient {
     public signer: Signer | null = null;
     public provider: Provider | null = null;
@@ -86,11 +93,8 @@ export class BaseClient {
             this.config = createConfig(configOrSigner as Partial<DexalotConfig>);
             this.parentEnv = this.config.parentEnv;
             this.apiBaseUrl = this.config.apiBaseUrl || API_URL.TESTNET;
-            
-            // Set up signer if private key provided
-            if (this.config.privateKey) {
-                this.signer = new Wallet(this.config.privateKey);
-            }
+
+            this._setupSignerFromPrivateKey();
         } else if (typeof configOrSigner === 'string') {
             this.config = createConfig();
             this.parentEnv = this.config.parentEnv;
@@ -109,10 +113,8 @@ export class BaseClient {
             this.config = loadConfigFromEnv();
             this.parentEnv = this.config.parentEnv;
             this.apiBaseUrl = this.config.apiBaseUrl || API_URL.TESTNET;
-            
-            if (this.config.privateKey) {
-                this.signer = new Wallet(this.config.privateKey);
-            }
+
+            this._setupSignerFromPrivateKey();
         }
 
         // Initialize logger
@@ -150,6 +152,23 @@ export class BaseClient {
             baseURL: this.apiBaseUrl,
             timeout: this.config.timeoutRead * 1000,
         });
+    }
+
+    /**
+     * Construct a Wallet from `config.privateKey` and immediately clear the key
+     * from config in both the success and failure paths. Once the Wallet exists
+     * the raw key should no longer live in the in-memory config. Callers that
+     * pass a pre-built `Signer` never populate `config.privateKey`, so this
+     * helper is only invoked from the config / env-load constructor branches.
+     */
+    private _setupSignerFromPrivateKey(): void {
+        const pk = this.config.privateKey;
+        if (!pk) return;
+        try {
+            this.signer = new Wallet(pk);
+        } finally {
+            this.config.privateKey = undefined;
+        }
     }
 
     /**
@@ -214,6 +233,10 @@ export class BaseClient {
         url: string,
         options?: { params?: any; data?: any; headers?: any }
     ): Promise<T> {
+        if (typeof method !== 'string' || !ALLOWED_HTTP_METHODS.has(method.toLowerCase())) {
+            throw new Error(`Invalid HTTP method: ${String(method)}`);
+        }
+
         // Rate limiting
         if (this._apiRateLimiter) {
             await this._apiRateLimiter.acquire();
