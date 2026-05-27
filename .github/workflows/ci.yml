@@ -45,6 +45,12 @@ jobs:
       - name: Type check
         run: pnpm exec tsc --noEmit -p tsconfig.build.json
 
+      - name: Type check examples
+        # Examples are not part of the published package but must compile
+        # against the SDK's actual API surface, so the runnable scripts
+        # stay in sync with the library.
+        run: pnpm exec tsc --noEmit -p tsconfig.examples.json
+
       - name: Unit tests with 100% coverage gate
         # Coverage threshold is enforced in jest.config.js; --ci sets
         # appropriate CI defaults (no watch, fail on snapshot drift).
