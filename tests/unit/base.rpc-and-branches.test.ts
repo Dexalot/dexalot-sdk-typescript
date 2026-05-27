@@ -5,6 +5,7 @@ jest.mock('axios');
 import axios from 'axios';
 import { BaseClient } from '../../src/core/base';
 import { createConfig } from '../../src/core/config';
+import { clearAllCaches } from '../../src/utils/cache';
 import * as ethers from 'ethers';
 import { JsonRpcProvider, Contract } from 'ethers';
 
@@ -416,6 +417,10 @@ describe('BaseClient RPC and environment branches (real ethers)', () => {
         const first = await client.getChains();
         expect(first.success).toBe(true);
         expect(first.data).toEqual({ 1: '' });
+
+        // Module-level cache is shared across clients; clear before the
+        // second scenario so getChains actually re-invokes getEnvironments.
+        clearAllCaches();
 
         const clientNoData = new BaseClient(createConfig());
         jest.spyOn(clientNoData, 'getEnvironments').mockResolvedValue({ success: true, data: undefined } as any);

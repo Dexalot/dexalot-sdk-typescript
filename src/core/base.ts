@@ -11,7 +11,15 @@ import { AsyncNonceManager } from '../utils/nonceManager.js';
 import { ProviderManager } from '../utils/providerManager.js';
 import { sanitizeErrorMessage } from '../utils/errorSanitizer.js';
 import { asyncRetry, RetryOptions } from '../utils/retry.js';
-import { MemoryCache, withCache, withInstanceCache } from '../utils/cache.js';
+import {
+    MemoryCache,
+    withInstanceCache,
+    getStaticCache,
+    getSemiStaticCache,
+    getBalanceCache,
+    getOrderbookCache,
+    configureCaches,
+} from '../utils/cache.js';
 import { getLogger, Logger, configureLogging, LogLevel, trackOperation } from '../utils/observability.js';
 import { normalizeTokenSymbol, normalizeTradingPair } from '../utils/tokenNormalization.js';
 import { ChainResolver, ResolvedChain } from '../utils/chainResolver.js';
@@ -121,12 +129,24 @@ export class BaseClient {
         configureLogging(this.config.logLevel as LogLevel, this.config.logFormat as 'console' | 'json');
         this._logger = getLogger('dexalot_sdk.base');
 
-        // Initialize caches
+        // Caches are module-level singletons shared across all client
+        // instances; this constructor merely applies the per-instance
+        // TTL overrides (mutating the singleton in place) and stores
+        // references for the existing call sites and `invalidateCache`.
+        // The previous per-instance `new MemoryCache(...)` calls also
+        // double-converted seconds-to-ms, so caches effectively never
+        // expired; module-level singletons fix that too.
         this._cacheEnabled = this.config.cacheEnabled;
-        this._staticCache = new MemoryCache(this.config.cacheTtlStatic * 1000);
-        this._semiStaticCache = new MemoryCache(this.config.cacheTtlSemiStatic * 1000);
-        this._balanceCache = new MemoryCache(this.config.cacheTtlBalance * 1000);
-        this._orderbookCache = new MemoryCache(this.config.cacheTtlOrderbook * 1000);
+        configureCaches({
+            cacheTtlStatic: this.config.cacheTtlStatic,
+            cacheTtlSemiStatic: this.config.cacheTtlSemiStatic,
+            cacheTtlBalance: this.config.cacheTtlBalance,
+            cacheTtlOrderbook: this.config.cacheTtlOrderbook,
+        });
+        this._staticCache = getStaticCache();
+        this._semiStaticCache = getSemiStaticCache();
+        this._balanceCache = getBalanceCache();
+        this._orderbookCache = getOrderbookCache();
 
         // Initialize rate limiters
         if (this.config.rateLimitEnabled) {

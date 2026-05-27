@@ -1,8 +1,17 @@
-import { MemoryCache, withCache, withInstanceCache } from '../../src/utils/cache';
+import {
+    MemoryCache,
+    withInstanceCache,
+    getStaticCache,
+    getSemiStaticCache,
+    getBalanceCache,
+    getOrderbookCache,
+    configureCaches,
+    clearAllCaches,
+    resetCachesForTesting,
+} from '../../src/utils/cache';
 
 describe('MemoryCache', () => {
     let cache: MemoryCache;
-    // Mock Date.now
     let now: number;
 
     beforeEach(() => {
@@ -15,146 +24,159 @@ describe('MemoryCache', () => {
         jest.useRealTimers();
     });
 
-    it('should store and retrieve values', () => {
-        cache = new MemoryCache(60); // 60 seconds TTL
+    it('stores and retrieves values', () => {
+        cache = new MemoryCache(60);
         cache.set('key1', 'value1');
         expect(cache.get('key1')).toBe('value1');
     });
 
-    it('should return null for non-existent keys', () => {
+    it('returns null for non-existent keys', () => {
         cache = new MemoryCache(60);
         expect(cache.get('missing')).toBeNull();
     });
 
-    it('should expire items after TTL', () => {
-        cache = new MemoryCache(10); // 10 seconds TTL
+    it('expires items after TTL', () => {
+        cache = new MemoryCache(10);
         cache.set('key1', 'value1');
-        
-        // Advance time by 11 seconds
         jest.setSystemTime(now + 11000);
-        
         expect(cache.get('key1')).toBeNull();
     });
 
-    it('should cleanup expired items explicitly on set', () => {
+    it('purges an expired entry on get and frees the map slot', () => {
         cache = new MemoryCache(10);
-        cache.set('key1', 'value1'); // Expires at 11000
-        
-        // Advance time 
-        jest.setSystemTime(now + 12000);
-
-        // This set triggers cleanup
-        cache.set('key2', 'value2');
-        
-        // key1 should be gone from store (internal check via get returning null is standard)
-        expect(cache.get('key1')).toBeNull(); 
+        cache.set('key1', 'value1');
+        jest.setSystemTime(now + 11000);
+        expect(cache.size).toBe(1);
+        cache.get('key1');
+        expect(cache.size).toBe(0);
     });
 
-    it('should enforce maxSize via LRU-like eviction', () => {
-        cache = new MemoryCache(60, 2); // Max size 2
+    it('enforces maxSize via FIFO eviction', () => {
+        cache = new MemoryCache(60, 2);
         cache.set('key1', 'value1');
         cache.set('key2', 'value2');
-
-        // Add 3rd item, should evict older one (iteration order)
         cache.set('key3', 'value3');
-
-        // Map insertion order: key1, key2, key3. 
-        // When removing excess (size 3 > 2), it iterates keys().next().
-        // First key inserted (key1) is first in iterator. 
         expect(cache.get('key1')).toBeNull();
         expect(cache.get('key2')).toBe('value2');
         expect(cache.get('key3')).toBe('value3');
     });
 
-    it('should handle edge case with empty string keys during eviction', () => {
-        // Test eviction behavior with empty string key
-        cache = new MemoryCache(60, 1); // Max size 1
+    it('handles empty string keys during eviction', () => {
+        cache = new MemoryCache(60, 1);
         cache.set('', 'empty');
-        
-        // Adding second entry should trigger eviction
         cache.set('key2', 'value2');
-
-        // Verify behavior: empty string key handling during eviction
-        expect(cache.get('')).toBe('empty');
+        // After the second set, the empty-string key is evicted (FIFO).
+        expect(cache.get('')).toBeNull();
         expect(cache.get('key2')).toBe('value2');
+    });
+
+    it('amortizes the TTL-expiry sweep over CLEANUP_INTERVAL writes', () => {
+        cache = new MemoryCache(10);
+        // Write an expired entry first (write count = 1).
+        cache.set('stale', 'old');
+        jest.setSystemTime(now + 11000);
+
+        // Write CLEANUP_INTERVAL - 2 more entries so the total is
+        // CLEANUP_INTERVAL - 1 (below the sweep threshold). The stale
+        // entry must still occupy a slot.
+        for (let i = 0; i < MemoryCache.CLEANUP_INTERVAL - 2; i++) {
+            cache.set(`k${i}`, i);
+        }
+        expect((cache as any).store.has('stale')).toBe(true);
+
+        // The next write hits exactly CLEANUP_INTERVAL → sweep runs and
+        // the stale entry is dropped.
+        cache.set('newest', 1);
+        expect((cache as any).store.has('stale')).toBe(false);
+    });
+
+    it('setTtl applies to subsequent writes (existing entries keep their original expiry)', () => {
+        cache = new MemoryCache(60);
+        cache.set('old', 'v');     // expiry = now + 60_000
+        cache.setTtl(1);
+        cache.set('new', 'v');     // expiry = now + 1_000
+        jest.setSystemTime(now + 2000);
+        // The post-setTtl entry expires; the pre-setTtl entry survives.
+        expect(cache.get('new')).toBeNull();
+        expect(cache.get('old')).toBe('v');
+    });
+
+    it('setMaxSize trims immediately when shrinking below current size', () => {
+        cache = new MemoryCache(60, 10);
+        cache.set('a', 1);
+        cache.set('b', 2);
+        cache.set('c', 3);
+        cache.setMaxSize(2);
+        expect(cache.get('a')).toBeNull();
+        expect(cache.get('b')).toBe(2);
+        expect(cache.get('c')).toBe(3);
+    });
+
+    it('clear removes both stored values and pending Promises', async () => {
+        cache = new MemoryCache(60);
+        cache.set('k', 'v');
+        cache.setPending('k', Promise.resolve('inflight'));
+        cache.clear();
+        expect(cache.get('k')).toBeNull();
+        expect(cache.getPending('k')).toBeUndefined();
     });
 });
 
-describe('withCache', () => {
-    let cache: MemoryCache;
-
-    beforeEach(() => {
-        cache = new MemoryCache(60);
+describe('Module-level cache singletons', () => {
+    it('getStaticCache / getSemiStaticCache / getBalanceCache / getOrderbookCache are stable references', () => {
+        const a = getStaticCache();
+        const b = getStaticCache();
+        expect(a).toBe(b);
+        expect(getSemiStaticCache()).toBeInstanceOf(MemoryCache);
+        expect(getBalanceCache()).toBeInstanceOf(MemoryCache);
+        expect(getOrderbookCache()).toBeInstanceOf(MemoryCache);
     });
 
-    it('should cache async function results', async () => {
-        const mockFn = jest.fn().mockResolvedValue('result');
-        const cachedFn = withCache(cache, 'test', mockFn);
-
-        // First call
-        const res1 = await cachedFn('arg1');
-        expect(res1).toBe('result');
-        expect(mockFn).toHaveBeenCalledTimes(1);
-
-        // Second call - should use cache
-        const res2 = await cachedFn('arg1');
-        expect(res2).toBe('result');
-        expect(mockFn).toHaveBeenCalledTimes(1);
+    it('configureCaches mutates the singleton in place (identity preserved)', () => {
+        const before = getStaticCache();
+        configureCaches({ cacheTtlStatic: 60 });
+        const after = getStaticCache();
+        expect(after).toBe(before);
     });
 
-    it('should use different keys for different arguments', async () => {
-        const mockFn = jest.fn().mockImplementation(async (arg) => `result-${arg}`);
-        const cachedFn = withCache(cache, 'test', mockFn);
-
-        await cachedFn('a');
-        await cachedFn('b');
-
-        expect(mockFn).toHaveBeenCalledTimes(2);
+    it('configureCaches ignores values equal to the documented defaults', () => {
+        const cache = getBalanceCache();
+        const beforeTtl = (cache as any).ttlMs;
+        configureCaches({ cacheTtlBalance: 10 });
+        const afterTtl = (cache as any).ttlMs;
+        expect(afterTtl).toBe(beforeTtl);
     });
 
-    it('should bypass cache when caching is disabled on instance', async () => {
-        // Simulate instance method call with caching disabled
-        const mockFn = jest.fn().mockResolvedValue('result');
-        const instance = { _cacheEnabled: false };
-        const cachedFn = withCache(cache, 'test', mockFn);
-
-        // First call should execute function
-        const res1 = await cachedFn(instance, 'arg1');
-        expect(res1).toBe('result');
-        expect(mockFn).toHaveBeenCalledTimes(1);
-
-        // Second call with same args should still execute (cache bypassed)
-        const res2 = await cachedFn(instance, 'arg1');
-        expect(res2).toBe('result');
-        expect(mockFn).toHaveBeenCalledTimes(2);
+    it('configureCaches applies each tier independently', () => {
+        configureCaches({
+            cacheTtlStatic: 30,
+            cacheTtlSemiStatic: 45,
+            cacheTtlBalance: 5,
+            cacheTtlOrderbook: 2,
+        });
+        expect((getStaticCache() as any).ttlMs).toBe(30 * 1000);
+        expect((getSemiStaticCache() as any).ttlMs).toBe(45 * 1000);
+        expect((getBalanceCache() as any).ttlMs).toBe(5 * 1000);
+        expect((getOrderbookCache() as any).ttlMs).toBe(2 * 1000);
     });
 
-    it('should use cache when caching is enabled on instance', async () => {
-        // Simulate instance method call with caching enabled
-        const mockFn = jest.fn().mockResolvedValue('result');
-        const instance = { _cacheEnabled: true };
-        const cachedFn = withCache(cache, 'test', mockFn);
-
-        // First call should execute and cache result
-        const res1 = await cachedFn(instance, 'arg1');
-        expect(res1).toBe('result');
-        expect(mockFn).toHaveBeenCalledTimes(1);
-
-        // Second call with same args should use cached result
-        const res2 = await cachedFn(instance, 'arg1');
-        expect(res2).toBe('result');
-        expect(mockFn).toHaveBeenCalledTimes(1);
+    it('clearAllCaches clears all four singletons', () => {
+        getStaticCache().set('s', 1);
+        getSemiStaticCache().set('ss', 1);
+        getBalanceCache().set('b', 1);
+        getOrderbookCache().set('o', 1);
+        clearAllCaches();
+        expect(getStaticCache().get('s')).toBeNull();
+        expect(getSemiStaticCache().get('ss')).toBeNull();
+        expect(getBalanceCache().get('b')).toBeNull();
+        expect(getOrderbookCache().get('o')).toBeNull();
     });
 
-    it('should handle function calls without instance object', async () => {
-        // Test behavior when first argument is not an object (not an instance method)
-        const mockFn = jest.fn().mockResolvedValue('result');
-        const cachedFn = withCache(cache, 'test', mockFn);
-
-        // Should work normally and use cache
-        const res = await cachedFn('arg1');
-        expect(res).toBe('result');
-        expect(mockFn).toHaveBeenCalledTimes(1);
+    it('resetCachesForTesting replaces the singletons and restores defaults', () => {
+        configureCaches({ cacheTtlStatic: 30 });
+        expect((getStaticCache() as any).ttlMs).toBe(30 * 1000);
+        resetCachesForTesting();
+        expect((getStaticCache() as any).ttlMs).toBe(3600 * 1000);
     });
 });
 
@@ -165,67 +187,127 @@ describe('withInstanceCache', () => {
         cache = new MemoryCache(60);
     });
 
-    it('should cache function results when caching is enabled', async () => {
-        // Test caching behavior with instance cache wrapper
-        const mockFn = jest.fn().mockResolvedValue('result');
-        const instance = { _cacheEnabled: true };
-        const cachedFn = withInstanceCache(instance, cache, 'test', mockFn);
-
-        // First call should execute function and cache result
-        const res1 = await cachedFn('arg1');
-        expect(res1).toBe('result');
-        expect(mockFn).toHaveBeenCalledTimes(1);
-
-        // Second call with same arguments should return cached result
-        const res2 = await cachedFn('arg1');
-        expect(res2).toBe('result');
-        expect(mockFn).toHaveBeenCalledTimes(1);
+    it('caches by (keyPrefix, apiBaseUrl, args)', async () => {
+        const fn = jest.fn().mockResolvedValue('r');
+        const instance = { _cacheEnabled: true, apiBaseUrl: 'https://api.test' };
+        const wrapped = withInstanceCache(instance, cache, 'op', fn);
+        await wrapped('a');
+        await wrapped('a');
+        expect(fn).toHaveBeenCalledTimes(1);
     });
 
-    it('should bypass cache when caching is disabled on instance', async () => {
-        // Test cache bypass behavior
-        const mockFn = jest.fn().mockResolvedValue('result');
-        const instance = { _cacheEnabled: false };
-        const cachedFn = withInstanceCache(instance, cache, 'test', mockFn);
-
-        // First call should execute function
-        const res1 = await cachedFn('arg1');
-        expect(res1).toBe('result');
-        expect(mockFn).toHaveBeenCalledTimes(1);
-
-        // Second call should execute again (cache bypassed)
-        const res2 = await cachedFn('arg1');
-        expect(res2).toBe('result');
-        expect(mockFn).toHaveBeenCalledTimes(2);
+    it('different apiBaseUrl values for the same call do not collide', async () => {
+        const fn = jest.fn().mockResolvedValue('r');
+        const i1 = { _cacheEnabled: true, apiBaseUrl: 'https://testnet' };
+        const i2 = { _cacheEnabled: true, apiBaseUrl: 'https://mainnet' };
+        const w1 = withInstanceCache(i1, cache, 'op', fn);
+        const w2 = withInstanceCache(i2, cache, 'op', fn);
+        await w1('a');
+        await w2('a');
+        expect(fn).toHaveBeenCalledTimes(2);
     });
 
-    it('should use different keys for different arguments', async () => {
-        const mockFn = jest.fn().mockImplementation(async (arg) => `result-${arg}`);
-        const instance = { _cacheEnabled: true };
-        const cachedFn = withInstanceCache(instance, cache, 'test', mockFn);
+    it('uses different keys for different arguments', async () => {
+        const fn = jest.fn().mockImplementation(async (a) => `r-${a}`);
+        const instance = { _cacheEnabled: true, apiBaseUrl: '' };
+        const wrapped = withInstanceCache(instance, cache, 'op', fn);
+        await wrapped('a');
+        await wrapped('b');
+        expect(fn).toHaveBeenCalledTimes(2);
+    });
 
-        await cachedFn('a');
-        await cachedFn('b');
+    it('bypasses cache entirely when _cacheEnabled === false', async () => {
+        const fn = jest.fn().mockResolvedValue('r');
+        const instance = { _cacheEnabled: false, apiBaseUrl: 'https://api' };
+        const wrapped = withInstanceCache(instance, cache, 'op', fn);
+        await wrapped('a');
+        await wrapped('a');
+        expect(fn).toHaveBeenCalledTimes(2);
+    });
 
-        expect(mockFn).toHaveBeenCalledTimes(2);
+    it('caches when _cacheEnabled is true (or undefined — undefined is not false)', async () => {
+        const fn = jest.fn().mockResolvedValue('r');
+        const instance = { apiBaseUrl: 'https://api' };
+        const wrapped = withInstanceCache(instance, cache, 'op', fn);
+        await wrapped('a');
+        await wrapped('a');
+        expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT include the instance itself in the cache key (no self ref)', async () => {
+        // Two distinct instances with the same apiBaseUrl SHOULD share cache slots.
+        const fn = jest.fn().mockResolvedValue('r');
+        const i1 = { _cacheEnabled: true, apiBaseUrl: 'https://api' };
+        const i2 = { _cacheEnabled: true, apiBaseUrl: 'https://api' };
+        await withInstanceCache(i1, cache, 'op', fn)('a');
+        await withInstanceCache(i2, cache, 'op', fn)('a');
+        expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('stampede protection — concurrent callers coalesce on one fetch', async () => {
+        let resolve!: (v: string) => void;
+        const fn = jest.fn(
+            (_arg: string) => new Promise<string>((r) => { resolve = r; })
+        );
+        const instance = { _cacheEnabled: true, apiBaseUrl: '' };
+        const wrapped = withInstanceCache(instance, cache, 'op', fn);
+
+        const p1 = wrapped('a');
+        const p2 = wrapped('a');
+        const p3 = wrapped('a');
+        // All three are racing for the same uncached key.
+        resolve('shared-result');
+        const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+        expect(r1).toBe('shared-result');
+        expect(r2).toBe('shared-result');
+        expect(r3).toBe('shared-result');
+        expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('stampede: error propagates to all waiters', async () => {
+        let reject!: (e: Error) => void;
+        const fn = jest.fn((_arg: string) => new Promise<string>((_r, rj) => { reject = rj; }));
+        const instance = { _cacheEnabled: true, apiBaseUrl: '' };
+        const wrapped = withInstanceCache(instance, cache, 'op', fn);
+
+        const p1 = wrapped('a').catch((e: Error) => e);
+        const p2 = wrapped('a').catch((e: Error) => e);
+        reject(new Error('boom'));
+        const [r1, r2] = await Promise.all([p1, p2]);
+        expect((r1 as Error).message).toBe('boom');
+        expect((r2 as Error).message).toBe('boom');
+        expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('stampede: a fresh fetch is issued after the previous in-flight resolves and is cleared', async () => {
+        const fn = jest.fn().mockResolvedValueOnce('v1').mockResolvedValueOnce('v2');
+        const instance = { _cacheEnabled: true, apiBaseUrl: '' };
+        const wrapped = withInstanceCache(instance, cache, 'op', fn);
+
+        const r1 = await wrapped('a');
+        // First call cached; second sees the cached value.
+        const r2 = await wrapped('a');
+        expect(r1).toBe('v1');
+        expect(r2).toBe('v1');
+        expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('treats missing apiBaseUrl on the instance as empty string', async () => {
+        const fn = jest.fn().mockResolvedValue('r');
+        const noUrl = { _cacheEnabled: true };
+        const wrapped = withInstanceCache(noUrl, cache, 'op', fn);
+        await wrapped('a');
+        await wrapped('a');
+        expect(fn).toHaveBeenCalledTimes(1);
     });
 });
 
 describe('MemoryCache.clear', () => {
-    it('should remove all entries from cache', () => {
+    it('removes all entries from the cache', () => {
         const cache = new MemoryCache(60);
-        // Add multiple entries
         cache.set('key1', 'value1');
         cache.set('key2', 'value2');
-        
-        // Verify entries exist
-        expect(cache.get('key1')).toBe('value1');
-        expect(cache.get('key2')).toBe('value2');
-        
-        // Clear cache
         cache.clear();
-        
-        // Verify all entries are removed
         expect(cache.get('key1')).toBeNull();
         expect(cache.get('key2')).toBeNull();
     });

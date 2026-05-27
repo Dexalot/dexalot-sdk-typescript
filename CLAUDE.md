@@ -65,37 +65,50 @@ still throw on programmer or configuration errors. Callers should
 check `.success` before accessing `.data` on Result-returning
 methods. Factory helpers live in `utils/result.ts`.
 
-### 4-tier caching — per-instance, simpler than Python's
+### 4-tier caching — module-level singletons, matches Python
 
-| Tier | TTL | Data |
-|---|---|---|
-| Static | 1h | Environments, deployments |
-| Semi-Static | 15m | Tokens, trading pairs |
-| Balance | 10s | Account balances |
-| Orderbook | 1s | Order book snapshots |
+| Tier | TTL | Max size | Data |
+|---|---|---|---|
+| Static | 1h | 128 | Environments, deployments |
+| Semi-Static | 15m | 256 | Tokens, trading pairs |
+| Balance | 10s | 512 | Account balances |
+| Orderbook | 1s | 256 | Order book snapshots |
 
-**Divergences from the Python SDK worth knowing:**
+**Key invariants:**
 
-- Caches are **per-instance** (constructed as fields on the client),
-  not module-level singletons. Two `DexalotClient` instances do not
-  share cache state. Tests don't have the cross-test contamination
-  problem Python's module-level caches have.
-- **No stampede protection.** Concurrent uncached reads for the same
-  key each fire their own underlying call. The Python SDK's
-  `async_ttl_cached` coalesces via `asyncio.Future`; we don't have
-  an equivalent. If stampede prevention matters in a consumer's
-  hot path, that needs adding.
-- **No `apiBaseUrl` key namespacing.** Python keys caches by
-  `api_base_url` so testnet/mainnet can share process space safely.
-  We don't — so don't run multiple clients at different
-  `parentEnv`s from the same process unless you disable caching on
-  at least one.
-- Cache cleanup runs on every `set` (not amortized every 50 writes
-  like Python's). For small caches this is fine; if hot paths
-  dominate, the cleanup cost is noticeable.
-- Per-instance `_cacheEnabled` flag bypasses caching entirely.
-- Use `withCache()` or `withInstanceCache()` from `utils/cache.ts`
-  to wrap async methods that should be cached.
+- Caches are **module-level singletons** in `utils/cache.ts`
+  (`_STATIC_CACHE`, `_SEMI_STATIC_CACHE`, `_BALANCE_CACHE`,
+  `_ORDERBOOK_CACHE`); all client instances share them so a
+  long-lived process never re-fetches the same key across instances.
+  Access via `getStaticCache()` / `getSemiStaticCache()` /
+  `getBalanceCache()` / `getOrderbookCache()`.
+- **Cache keys are namespaced by `apiBaseUrl`** so testnet and
+  mainnet clients in the same process do not collide on
+  `(method, args)`. Key format:
+  `keyPrefix|apiBaseUrl|JSON.stringify(args)`. The instance itself
+  is **never** serialized — including `this` in the key would
+  prevent GC of short-lived clients and diverge slots for the same
+  logical call.
+- **Stampede protection** via in-flight Promise coalescing inside
+  each `MemoryCache`. Concurrent callers for the same uncached key
+  see one in-flight fetch and share the result (or the same error).
+- **Amortized TTL-expiry sweep** runs once per `CLEANUP_INTERVAL`
+  (50) writes; size enforcement (`trim`) runs on every write. The
+  previous "cleanup on every set" pattern was wasteful.
+- Per-instance `_cacheEnabled = false` bypasses caching entirely
+  for that instance.
+- `configureCaches(config)` applies non-default TTLs in place
+  (`setTtl`); the singleton identity is preserved so any references
+  already held by clients continue to point at the live cache.
+  `clearAllCaches()` clears all four; `resetCachesForTesting()`
+  replaces the singletons with fresh instances at defaults.
+- **Tests must clear caches between runs.** A
+  `setupFilesAfterEnv` hook (`jest.setupAfterEnv.js`) calls
+  `resetCachesForTesting()` + `clearAllCaches()` before each test;
+  do not remove it without replacing the isolation mechanism.
+- Use `withInstanceCache()` from `utils/cache.ts` to wrap async
+  methods that should be cached. The previous `withCache()` was
+  unused and removed.
 
 ### Config loading and validation
 
@@ -230,19 +243,23 @@ removing the `prepare` script breaks `github:` installs — **don't**.
   try/catch so a revoke failure never overrides the original tx
   error — the original error wins. Logged at `debug` via the
   observability logger.
-- **Cache key generation**: `${keyPrefix}:${JSON.stringify(args)}`.
-  **`this` is captured as `args[0]` when methods go through
-  `withCache`**, but `withInstanceCache` takes the instance
-  separately. Object-arg stability (key ordering, prototype
-  inclusion) depends on `JSON.stringify`, so avoid non-trivial
-  class instances as cache arguments — prefer primitives or plain
-  objects.
-- **Cache is per-client, not shared**: no cross-client coordination.
-  If a consumer creates many short-lived clients they get no cache
-  benefit; recommend a single long-lived client.
-- **No stampede protection** (see §Caching above). If adding: port
-  the Python SDK's `async_ttl_cached` Future-coalescing pattern,
-  implemented with `Promise` here.
+- **Cache key generation**: `${keyPrefix}|${apiBaseUrl}|${JSON.stringify(args)}`.
+  The instance is **never** in the key — `withInstanceCache` takes
+  the instance separately, reads `apiBaseUrl` and `_cacheEnabled`
+  off it, and serializes ONLY the method args. Object-arg stability
+  (key ordering, prototype inclusion) depends on `JSON.stringify`,
+  so avoid non-trivial class instances as cache arguments — prefer
+  primitives or plain objects.
+- **Caches are module-level singletons, shared across clients**:
+  long-lived processes amortize fetches across instances; cache
+  keys are env-namespaced by `apiBaseUrl` so testnet and mainnet
+  clients do not collide. Test suites use a global
+  `resetCachesForTesting()` + `clearAllCaches()` hook before each
+  test to avoid cross-test contamination.
+- **Stampede protection** is built into `withInstanceCache`:
+  concurrent callers for the same uncached key share a single
+  in-flight Promise; the wrapped function runs once per key per
+  fetch window.
 - **Rate limiter FIFO vs token bucket**: documented above. Concurrent
   callers serialize; burst tolerance is low.
 - **Provider failover has no fast path**: every `getProvider` call
