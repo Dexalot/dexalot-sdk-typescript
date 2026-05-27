@@ -305,6 +305,16 @@ removing the `prepare` script breaks `github:` installs — **don't**.
   `toWei(value, decimals)`. Do not reintroduce
   `parseFloat(value.toFixed(N))` rounding in any write path — that is
   silent slippage (a stop at 99.99 silently becoming 99.9).
+- **All TRANSFER write paths route through `toWei`**: `deposit`,
+  `withdraw`, `transferPortfolio`, `addGas`, `removeGas`, and
+  `getDepositBridgeFee` all encode their user-supplied amount via
+  `toWei(amount, decimals)` from `src/utils/decimal.ts`. The previous
+  `BigInt(Utils.unitConversion(amount, dec, true))` pattern was
+  removed in favor of the direct helper. `Utils.unitConversion` is
+  still used for the read-side (`formatUnits`-backed) display
+  conversion, which is already precision-safe via ethers internally.
+  Do not reintroduce `BigInt(Math.floor(amount * 10**N))` anywhere —
+  that pattern silently drops 262144 wei at `2933.0 * 10**18`.
 - **Display-decimal precision uses REJECT-with-tolerance**: a `1e-10`
   tolerance band absorbs binary-float-representation noise (e.g.
   `0.1 + 0.2 = 0.30000000000000004` snaps to `0.3` at 1 display
