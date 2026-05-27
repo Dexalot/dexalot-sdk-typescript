@@ -208,17 +208,25 @@ describe('inputValidators', () => {
     });
 
     describe('validatePairFormat', () => {
-        it('should accept valid pairs', () => {
+        it('should accept valid pairs (case-insensitive, hyphens and underscores allowed)', () => {
             expect(validatePairFormat('AVAX/USDC').success).toBe(true);
             expect(validatePairFormat('BTC/ETH').success).toBe(true);
             expect(validatePairFormat('TOKEN123/QUOTE456').success).toBe(true);
+            // Lowercase pairs are accepted; downstream callers normalize via
+            // normalizeTradingPair before issuing API requests.
+            expect(validatePairFormat('avax/usdc').success).toBe(true);
+            // Hyphens and underscores match the Python regex.
+            expect(validatePairFormat('USD-T/USDC').success).toBe(true);
+            expect(validatePairFormat('FOO_BAR/USDC').success).toBe(true);
         });
 
         it('should reject invalid formats', () => {
             expect(validatePairFormat('AVAX-USDC').success).toBe(false);
             expect(validatePairFormat('AVAX').success).toBe(false);
-            expect(validatePairFormat('avax/usdc').success).toBe(false);
             expect(validatePairFormat('AVAX/USDC/EXTRA').success).toBe(false);
+            // Symbols outside the alphanumeric/-/_ set are still rejected.
+            expect(validatePairFormat('AVAX/USDC!').success).toBe(false);
+            expect(validatePairFormat('AVAX USDC/USDT').success).toBe(false);
         });
 
         it('should reject empty strings', () => {

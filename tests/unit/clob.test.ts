@@ -702,6 +702,188 @@ describe('CLOBClient', () => {
          });
     });
 
+    describe('getCandles', () => {
+         it('hits /api/trading/candle-chunk (not /privapi/) with normalized pair and intervalnum/intervalstr', async () => {
+              const fakeRows = [{ date: 't', open: '1', high: '2', low: '0.5', close: '1.5', volume: '10', quote_volume: '15', change: '0.5' }];
+              mockAxios.request.mockResolvedValue({ data: fakeRows });
+
+              const result = await client.getCandles('avax/usdc', '15m', 25);
+              expect(result.success).toBe(true);
+              expect(result.data).toEqual(fakeRows);
+
+              const call = mockAxios.request.mock.calls[mockAxios.request.mock.calls.length - 1][0];
+              expect(call.url).toBe('/api/trading/candle-chunk');
+              expect(call.params).toEqual({ pair: 'AVAX/USDC', intervalnum: 15, intervalstr: 'minute', count: 25 });
+         });
+
+         it('rejects invalid pair format', async () => {
+              const result = await client.getCandles('INVALID', '1m', 10);
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('pair');
+         });
+
+         it('rejects unknown interval', async () => {
+              const result = await client.getCandles('AVAX/USDC', '2m', 10);
+              expect(result.success).toBe(false);
+              expect(result.error).toContain("Invalid interval '2m'");
+         });
+
+         it('rejects out-of-range limit', async () => {
+              expect((await client.getCandles('AVAX/USDC', '1m', 0)).success).toBe(false);
+              expect((await client.getCandles('AVAX/USDC', '1m', 501)).success).toBe(false);
+              expect((await client.getCandles('AVAX/USDC', '1m', 1.5)).success).toBe(false);
+         });
+
+         it('returns a fail Result when the backend returns a non-array', async () => {
+              mockAxios.request.mockResolvedValue({ data: { error: 'oops' } });
+              const result = await client.getCandles('AVAX/USDC', '1m', 10);
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('Unexpected candle response shape');
+         });
+
+         it('caches at the 1s orderbook tier (second call within TTL hits cache)', async () => {
+              const fakeRows = [{ date: 't', open: '1', high: '2', low: '0.5', close: '1.5', volume: '10', quote_volume: '15', change: '0.5' }];
+              mockAxios.request.mockClear();
+              mockAxios.request.mockResolvedValue({ data: fakeRows });
+
+              const r1 = await client.getCandles('AVAX/USDC', '1m', 5);
+              const r2 = await client.getCandles('AVAX/USDC', '1m', 5);
+              expect(r1.success).toBe(true);
+              expect(r2.success).toBe(true);
+              expect(mockAxios.request).toHaveBeenCalledTimes(1);
+         });
+
+         it('returns a fail Result on backend error', async () => {
+              mockAxios.request.mockRejectedValue(new Error('candles down'));
+              const result = await client.getCandles('AVAX/USDC', '1h', 10);
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('fetching candles');
+         });
+    });
+
+    describe('getMarketSnapshot', () => {
+         it('hits /api/stats/market-snapshot (not /privapi/) and returns the envelope', async () => {
+              const fakeData = {
+                  market_snapshot: [{ pair: 'AVAX/USDC', date: 't', open: '1', high: '2', low: '0.5', close: '1.5', volume: '10', quote_volume: '15', change: '0.5' }],
+                  totals: { total_volume: '100' },
+                  last24: { count: 1 },
+              };
+              mockAxios.request.mockResolvedValue({ data: fakeData });
+
+              const result = await client.getMarketSnapshot();
+              expect(result.success).toBe(true);
+              expect(result.data!.market_snapshot).toHaveLength(1);
+
+              const call = mockAxios.request.mock.calls[mockAxios.request.mock.calls.length - 1][0];
+              expect(call.url).toBe('/api/stats/market-snapshot');
+         });
+
+         it('returns a stable empty envelope when the backend returns a string', async () => {
+              mockAxios.request.mockResolvedValue({ data: '' });
+              const result = await client.getMarketSnapshot();
+              expect(result.success).toBe(true);
+              expect(result.data).toEqual({ market_snapshot: [], totals: {}, last24: {} });
+         });
+
+         it('returns a fail Result on unexpected shape (array)', async () => {
+              mockAxios.request.mockResolvedValue({ data: [1, 2, 3] });
+              const result = await client.getMarketSnapshot();
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('Unexpected market snapshot shape');
+              expect(result.error).toContain('array');
+         });
+
+         it('returns a fail Result on unexpected shape (number)', async () => {
+              mockAxios.request.mockResolvedValue({ data: 42 });
+              const result = await client.getMarketSnapshot();
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('Unexpected market snapshot shape');
+              expect(result.error).toContain('number');
+         });
+
+         it('defaults missing sub-fields when partial', async () => {
+              mockAxios.request.mockResolvedValue({ data: { market_snapshot: 'not-an-array' } });
+              const result = await client.getMarketSnapshot();
+              expect(result.success).toBe(true);
+              expect(result.data!.market_snapshot).toEqual([]);
+              expect(result.data!.totals).toEqual({});
+              expect(result.data!.last24).toEqual({});
+         });
+
+         it('caches at the 1s orderbook tier', async () => {
+              mockAxios.request.mockClear();
+              mockAxios.request.mockResolvedValue({ data: { market_snapshot: [], totals: {}, last24: {} } });
+              await client.getMarketSnapshot();
+              await client.getMarketSnapshot();
+              expect(mockAxios.request).toHaveBeenCalledTimes(1);
+         });
+
+         it('returns a fail Result on backend error', async () => {
+              mockAxios.request.mockRejectedValue(new Error('snapshot down'));
+              const result = await client.getMarketSnapshot();
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('fetching market snapshot');
+         });
+    });
+
+    describe('get24hStats', () => {
+         it('filters the snapshot to the requested pair', async () => {
+              const fakeData = {
+                  market_snapshot: [
+                      { pair: 'BTC/USDC', date: 't', open: '50000', high: '51000', low: '49000', close: '50500', volume: '10', quote_volume: '500000', change: '500' },
+                      { pair: 'AVAX/USDC', date: 't', open: '20', high: '22', low: '19', close: '21', volume: '100', quote_volume: '2100', change: '1' },
+                  ],
+                  totals: {}, last24: {},
+              };
+              mockAxios.request.mockResolvedValue({ data: fakeData });
+
+              const result = await client.get24hStats('AVAX/USDC');
+              expect(result.success).toBe(true);
+              expect(result.data!.pair).toBe('AVAX/USDC');
+              expect(result.data!.close).toBe('21');
+         });
+
+         it('normalizes case-insensitive pair input', async () => {
+              mockAxios.request.mockResolvedValue({
+                  data: {
+                      market_snapshot: [{ pair: 'AVAX/USDC', date: 't', open: '1', high: '1', low: '1', close: '1', volume: '0', quote_volume: '0', change: '0' }],
+                      totals: {}, last24: {},
+                  },
+              });
+              const result = await client.get24hStats('avax/usdc');
+              expect(result.success).toBe(true);
+         });
+
+         it('returns a fail Result when the pair is not in the snapshot', async () => {
+              mockAxios.request.mockResolvedValue({
+                  data: { market_snapshot: [], totals: {}, last24: {} },
+              });
+              const result = await client.get24hStats('AVAX/USDC');
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('not found in market snapshot');
+         });
+
+         it('rejects invalid pair format', async () => {
+              const result = await client.get24hStats('INVALID');
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('pair');
+         });
+
+         it('propagates the failure when the snapshot fetch fails', async () => {
+              mockAxios.request.mockRejectedValue(new Error('snapshot down'));
+              const result = await client.get24hStats('AVAX/USDC');
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('fetching market snapshot');
+         });
+
+         it('uses a static fallback message when the snapshot Result has no error string', async () => {
+              jest.spyOn(client, 'getMarketSnapshot').mockResolvedValueOnce({ success: true, data: undefined } as any);
+              const result = await client.get24hStats('AVAX/USDC');
+              expect(result.success).toBe(false);
+              expect(result.error).toContain('Failed to fetch market snapshot');
+         });
+    });
+
     describe('getOrderBook', () => {
          it('should fetch and parse book', async () => {
               // Mock NBook filter logic (0 prices)

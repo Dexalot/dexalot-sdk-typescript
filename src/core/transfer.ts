@@ -699,6 +699,120 @@ export class TransferClient extends SwapClient {
         }
 
         /**
+         * Get balances for an explicit list of tokens on one chain.
+         *
+         * Returns a flat `token -> balance` map. The caller specifies exactly
+         * which tokens to read; unknown tokens produce an aggregated error
+         * rather than being silently skipped. Cached for 10 seconds (balance
+         * cache tier); cache keys are order-insensitive — `['AVAX', 'USDC']`
+         * and `['USDC', 'AVAX']` share a cache slot because tokens are
+         * sorted and deduplicated before delegating to the cached internal.
+         */
+        public async getChainTokenBalances(
+            chain: string,
+            tokens: string[],
+            address?: string
+        ): Promise<Result<Record<string, string>>> {
+            if (typeof chain !== 'string' || !chain.trim()) {
+                return Result.fail(
+                    `Invalid chain: must be non-empty string, got ${typeof chain}`
+                );
+            }
+            if (!Array.isArray(tokens) || tokens.length === 0) {
+                return Result.fail('tokens must be a non-empty array of token symbols.');
+            }
+            for (const tok of tokens) {
+                const tokRes = validateTokenSymbol(tok, 'tokens');
+                if (!tokRes.success) return Result.fail(tokRes.error!);
+            }
+
+            const resolved = this.resolveChainReference(chain, true);
+            if (!resolved.success || !resolved.data) {
+                return Result.fail(resolved.error || `Could not resolve chain '${chain}'.`);
+            }
+
+            const addrRes = await this._resolveQueryAddress(address);
+            if (!addrRes.success) {
+                return Result.fail(addrRes.error!);
+            }
+
+            // Sort + dedupe so that ['AVAX', 'USDC'] and ['USDC', 'AVAX']
+            // share a cache slot. Tokens are also canonicalized via
+            // normalizeToken so 'avax' and 'AVAX' collapse.
+            const normalized = Array.from(
+                new Set(tokens.map(t => this.normalizeToken(t)))
+            ).sort();
+
+            return this._getChainTokenBalancesCached(
+                resolved.data.canonicalName,
+                addrRes.data!,
+                normalized
+            );
+        }
+
+        /**
+         * Cached internal: fetch each requested token's balance in parallel
+         * and aggregate. Sorted+deduped `tokens` keeps the cache key stable
+         * for caller-order variations of the same set.
+         */
+        private async _getChainTokenBalancesCached(
+            chain: string,
+            queryAddress: string,
+            tokens: string[]
+        ): Promise<Result<Record<string, string>>> {
+            const cachedFn = withInstanceCache(
+                this,
+                this._balanceCache,
+                'getChainTokenBalances',
+                async (
+                    c: string,
+                    addr: string,
+                    toks: string[]
+                ): Promise<Result<Record<string, string>>> => {
+                    const results = await Promise.allSettled(
+                        toks.map(t => this.getChainWalletBalance(c, t, addr))
+                    );
+
+                    const balances: Record<string, string> = {};
+                    const unknown: string[] = [];
+                    const errors: string[] = [];
+
+                    for (let i = 0; i < toks.length; i++) {
+                        const tok = toks[i];
+                        const r = results[i];
+                        if (r.status === 'rejected') {
+                            errors.push(`${tok}: ${this._sanitizeError(r.reason, 'fetching balance')}`);
+                            continue;
+                        }
+                        const res = r.value;
+                        if (!res.success || !res.data) {
+                            const err = res.error || 'unknown error';
+                            if (err.includes('not available') || err.includes('not found')) {
+                                unknown.push(tok);
+                            } else {
+                                errors.push(`${tok}: ${err}`);
+                            }
+                            continue;
+                        }
+                        const bal = (res.data as any).balance;
+                        balances[tok] = bal === undefined || bal === null ? '' : String(bal);
+                    }
+
+                    if (unknown.length > 0) {
+                        return Result.fail(
+                            `Unknown tokens on chain ${c}: ${JSON.stringify(unknown)}`
+                        );
+                    }
+                    if (errors.length > 0) {
+                        return Result.fail(errors.join('; '));
+                    }
+                    return Result.ok(balances);
+                }
+            );
+            return cachedFn(chain, queryAddress, tokens);
+        }
+
+        /**
          * Get all token balances on a specific chain.
          */
         public async getChainWalletBalances(chain: string, address?: string): Promise<Result<any>> {
