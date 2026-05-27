@@ -2,6 +2,7 @@ import Big from 'big.js';
 import {
     toDecimal,
     toWei,
+    fromWei,
     quantizeToDisplay,
     checkDisplayPrecision,
     checkTradeAmountBounds,
@@ -79,6 +80,45 @@ describe('decimal utilities', () => {
             expect(() => toWei(1, 1.5)).toThrow(/non-negative integer/);
             expect(() => toWei(1, -1)).toThrow(/non-negative integer/);
             expect(() => toWei(1, NaN)).toThrow(/non-negative integer/);
+        });
+    });
+
+    describe('fromWei', () => {
+        it('decodes integer wei from a bigint input exactly', () => {
+            expect(fromWei(2933000000000000000000n, 18).toString()).toBe('2933');
+            expect(fromWei(1500000000000000000n, 18).toString()).toBe('1.5');
+        });
+
+        it('accepts decimal-string wei (the non-bigint branch)', () => {
+            expect(fromWei('1500000000000000000', 18).toString()).toBe('1.5');
+            expect(fromWei('1234567', 6).toString()).toBe('1.234567');
+        });
+
+        it('accepts number wei for small enough values', () => {
+            expect(fromWei(1500, 0).toString()).toBe('1500');
+            expect(fromWei(2_933_000_000n, 6).toString()).toBe('2933');
+        });
+
+        it('preserves precision past the IEEE-754 limit (string round-trip)', () => {
+            // 10^30 is well beyond what a JS number can hold exactly; the
+            // Big-based path round-trips it through string form intact.
+            expect(fromWei(10n ** 48n, 18).toFixed()).toBe('1000000000000000000000000000000');
+        });
+
+        it('handles displayDecimals = 0 (identity in human units)', () => {
+            expect(fromWei(42n, 0).toString()).toBe('42');
+        });
+
+        it('throws on non-integer or negative decimals', () => {
+            expect(() => fromWei(1n, 1.5)).toThrow(/non-negative integer/);
+            expect(() => fromWei(1n, -1)).toThrow(/non-negative integer/);
+            expect(() => fromWei(1n, NaN)).toThrow(/non-negative integer/);
+        });
+
+        it('is the inverse of toWei for representable values', () => {
+            const amount = '12345.67';
+            const wei = toWei(amount, 6);
+            expect(fromWei(wei, 6).toString()).toBe(amount);
         });
     });
 

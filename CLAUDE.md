@@ -130,35 +130,42 @@ slashes are stripped.
 is opt-in (`wsManagerEnabled: false` by default). Callbacks run on
 the same event loop and can `await` normally.
 
-### Rate limiter serializes calls (FIFO), not a parallel token bucket
+### Rate limiter: concurrent sleeps, not chained FIFO
 
-`AsyncRateLimiter` in `utils/rateLimit.ts` chains calls through a
-`pending` promise to enforce strict FIFO ordering and the minimum
-inter-call interval. **This differs from the Python SDK's token
-bucket**, which allows multiple waiters to sleep concurrently. In
-practice: burst behavior is more uniformly spaced here; raw
-throughput for concurrent callers is lower. Default: 5 API req/s,
-10 RPC req/s. Each client instance has its own limiters; multiple
-clients do not share quotas.
+`AsyncRateLimiter` in `utils/rateLimit.ts` maintains a `nextSlot`
+wall-clock cursor. Each `acquire()` synchronously reads the cursor,
+advances it by `minInterval`, then sleeps independently until its
+slot opens. Multiple concurrent callers therefore sleep in parallel
+rather than chaining through a single in-flight Promise — request
+body preparation and response handling can overlap with previous
+callers' rate-limit waits. After a quiet period the cursor is reset
+to `now` so we don't issue a burst to "catch up". Default: 5 API
+req/s, 10 RPC req/s. Each client instance has its own limiters;
+multiple clients do not share quotas.
 
-### Nonce manager: correctness over throughput
+### Nonce manager: FIFO promise chain per (chainId, address)
 
-`AsyncNonceManager` uses per-`(chainId, address)` promise-based
-locks to enforce sequential nonce acquisition, matching the Python
-SDK's correctness-first model. High-frequency batching contends on
-these locks by design — this is intentional to prevent double-nonce
-errors. Locks are per-instance, not global.
+`AsyncNonceManager` serializes nonce acquisitions through a
+Promise-chain queue keyed by `(chainId, address)`. Each caller
+reads the previous tail from the `locks` map and publishes its own
+"released" Promise as the new tail synchronously (no microtask
+boundary between the read and the publish), so concurrent
+acquisitions for the same key never lose their place in line.
+Different keys never block each other. Memory: the map only holds
+the latest tail per key; older Promises are referenced only by
+still-waiting closures and are GC'd as they drain. High-frequency
+batching contends on the chain by design — this prevents
+double-nonce errors. Per-instance, not global.
 
 ### Multi-provider RPC failover
 
 `ProviderManager` in `utils/providerManager.ts` tracks failure counts
 per provider and auto-recovers after a configurable cooldown
 (default: 60s). Two-pass selection: first healthy, then any
-cooldown-expired unhealthy. **No lock-free fast path** like the
-Python version — but the model is synchronous and contention is not
-a concern for this style.
-
-Instantiated with `JsonRpcProvider` instances from `ethers`.
+cooldown-expired unhealthy. The selection path is synchronous and
+allocation-free — `getProvider` walks the array once per call;
+there are no locks or async waits. Instantiated with
+`JsonRpcProvider` instances from `ethers`.
 
 ---
 
@@ -260,8 +267,19 @@ removing the `prepare` script breaks `github:` installs — **don't**.
   concurrent callers for the same uncached key share a single
   in-flight Promise; the wrapped function runs once per key per
   fetch window.
-- **Rate limiter FIFO vs token bucket**: documented above. Concurrent
-  callers serialize; burst tolerance is low.
+- **Rate limiter advances a wall-clock cursor synchronously**:
+  concurrent acquires reserve distinct slots before any of them
+  sleep, so callers' sleeps run in parallel and request preparation
+  / response handling can overlap with previous callers' waits.
+  Total wall-clock for N concurrent calls at R rps is
+  `(N - 1) / R` seconds (same as chained-FIFO), but the CPU is
+  free between caller wake-ups.
+- **`AsyncNonceManager` uses a Promise-chain queue per key**: the
+  read-from-tail / publish-new-tail sequence is synchronous — no
+  microtask boundary between them — so the previous "two waiters
+  overwrite each other's resolver" race cannot fire. The `locks`
+  map only holds the latest tail per key; older Promises drop out
+  of reach as their waiters drain.
 - **Provider failover has no fast path**: every `getProvider` call
   walks the health list. At typical provider counts (1–3 per chain)
   this is fine; at higher counts consider caching the first-healthy

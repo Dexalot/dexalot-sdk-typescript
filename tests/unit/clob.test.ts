@@ -2782,15 +2782,39 @@ describe('order helper branch coverage', () => {
         expect(result.data!.status).toBe('7');
     });
 
-    it('getOrderByClientId stringifies non-Error formatter failures during contract formatting', async () => {
-        const unitSpy = jest.spyOn(Utils, 'unitConversion').mockImplementation(() => {
+    it('formats Error throws in _formatOrderData via .message', async () => {
+        // The order-format path now uses the Big-based fromWei helper.
+        // Inject an Error throw by making the pair's quote_decimals invalid;
+        // fromWei refuses non-integer decimals and throws an Error.
+        const original = client.pairs['AVAX/USDC'];
+        client.pairs = {
+            ...client.pairs,
+            'AVAX/USDC': { ...original, quote_decimals: 'not-a-number' as any },
+        };
+        try {
+            mockContract.getOrderByClientId.mockResolvedValueOnce(makeContractOrderRow());
+            const result = await client.getOrderByClientId(VALID_CLIENT_ID);
+            expect(result.success).toBe(false);
+            expect(typeof result.error).toBe('string');
+            expect(result.error).toContain('non-negative integer');
+        } finally {
+            client.pairs['AVAX/USDC'] = original;
+        }
+    });
+
+    it('stringifies non-Error throws in _formatOrderData via String(e)', async () => {
+        // Inject a non-Error throw on _buildCanonicalOrder, which runs
+        // inside the same try block. The catch's `e instanceof Error`
+        // check falls through to String(e).
+        const spy = jest.spyOn(client as any, '_buildCanonicalOrder').mockImplementationOnce(() => {
+            // eslint-disable-next-line @typescript-eslint/no-throw-literal
             throw 'plain-format-failure';
         });
         mockContract.getOrderByClientId.mockResolvedValueOnce(makeContractOrderRow());
         const result = await client.getOrderByClientId(VALID_CLIENT_ID);
         expect(result.success).toBe(false);
         expect(result.error).toBe('plain-format-failure');
-        unitSpy.mockRestore();
+        spy.mockRestore();
     });
 
     it('getOrderByClientId stringifies non-Error formatter failures', async () => {

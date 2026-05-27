@@ -2,11 +2,27 @@ import { Provider } from 'ethers';
 
 /**
  * Per-(chainId, address) nonce sequencing for transaction submission.
+ *
+ * Acquisitions for the same key serialize through a Promise chain:
+ * each caller stores the "released" Promise of the previous caller in
+ * the `locks` map (the tail of the chain). The next caller reads that
+ * tail, captures it in closure, and stores its own tail. The read /
+ * store / await sequence is synchronous from the event loop's
+ * perspective, so concurrent acquisitions for the same key never lose
+ * their place in line — the previous bug where two waiters could each
+ * "see" the same tail and both proceed concurrently is gone.
+ *
+ * Memory: the `locks` map only holds the latest tail per key.
+ * Previously-acquired (and released) Promises are referenced only by
+ * the closures of any callers still awaiting them; once all such
+ * waiters drain, they become unreachable and are garbage collected.
+ *
+ * Different (chainId, address) keys never block each other.
  */
 export class AsyncNonceManager {
     private nonces: Map<string, number> = new Map();
+    /** Latest "released" Promise per key (the tail of the FIFO chain). */
     private locks: Map<string, Promise<void>> = new Map();
-    private lockResolvers: Map<string, () => void> = new Map();
 
     /**
      * Generate a unique key for (address, chainId) pair.
@@ -16,39 +32,38 @@ export class AsyncNonceManager {
     }
 
     /**
-     * Acquire a lock for the given key.
+     * Acquire the lock for `key` and return a `release()` function that
+     * the caller MUST invoke to unblock the next waiter. The returned
+     * Promise resolves when this caller holds the lock.
      */
-    private async acquireLock(key: string): Promise<void> {
-        // Wait for any existing lock
-        const existingLock = this.locks.get(key);
-        if (existingLock) {
-            await existingLock;
-        }
-
-        // Create a new lock
-        let resolver: () => void;
-        const lock = new Promise<void>(resolve => {
-            resolver = resolve;
+    private async acquireLock(key: string): Promise<() => void> {
+        const previousPending = this.locks.get(key) ?? Promise.resolve();
+        let release!: () => void;
+        const released = new Promise<void>((resolve) => {
+            release = resolve;
         });
-        this.locks.set(key, lock);
-        this.lockResolvers.set(key, resolver!);
-    }
-
-    /**
-     * Release the lock for the given key.
-     */
-    private releaseLock(key: string): void {
-        const resolver = this.lockResolvers.get(key);
-        if (resolver) {
-            resolver();
-            this.locks.delete(key);
-            this.lockResolvers.delete(key);
+        // Atomically (no microtask boundary): capture the previous tail
+        // in `previousPending` and publish ourselves as the new tail.
+        this.locks.set(key, released);
+        try {
+            await previousPending;
+        } catch {
+            // Previous holder's chain rejected (shouldn't happen with
+            // our resolver-only Promise, but defend anyway).
         }
+        return () => {
+            release();
+            // If we're still the tail and no later caller has chained
+            // onto us, drop the entry so the map doesn't grow unbounded.
+            if (this.locks.get(key) === released) {
+                this.locks.delete(key);
+            }
+        };
     }
 
     /**
      * Get the next nonce for the given address on the given chain.
-     * 
+     *
      * @param provider - Ethers provider to fetch nonce from chain
      * @param address - The address to get the nonce for
      * @param chainId - Optional chain ID (will be fetched from provider if not provided)
@@ -63,8 +78,8 @@ export class AsyncNonceManager {
         const resolvedChainId = chainId ?? Number((await provider.getNetwork()).chainId);
         const key = this.getKey(address, resolvedChainId);
 
-        await this.acquireLock(key);
-        
+        const release = await this.acquireLock(key);
+
         try {
             let nonce = this.nonces.get(key);
 
@@ -78,13 +93,13 @@ export class AsyncNonceManager {
             this.nonces.set(key, nonce);
             return nonce;
         } finally {
-            this.releaseLock(key);
+            release();
         }
     }
 
     /**
      * Reset the nonce for the given address by fetching from chain.
-     * 
+     *
      * @param provider - Ethers provider to fetch nonce from chain
      * @param address - The address to reset the nonce for
      * @param chainId - Optional chain ID (will be fetched from provider if not provided)
@@ -97,19 +112,20 @@ export class AsyncNonceManager {
         const resolvedChainId = chainId ?? Number((await provider.getNetwork()).chainId);
         const key = this.getKey(address, resolvedChainId);
 
-        await this.acquireLock(key);
-        
+        const release = await this.acquireLock(key);
+
         try {
             const nonce = await provider.getTransactionCount(address, 'pending');
-            this.nonces.set(key, nonce - 1); // Set to nonce-1 so next getNonce returns correct value
+            // Set to nonce-1 so the next getNonce returns the correct value.
+            this.nonces.set(key, nonce - 1);
         } finally {
-            this.releaseLock(key);
+            release();
         }
     }
 
     /**
      * Clear the cached nonce for the given address (without fetching from chain).
-     * 
+     *
      * @param address - The address to clear the nonce for
      * @param chainId - The chain ID
      */

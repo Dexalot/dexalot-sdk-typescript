@@ -52,6 +52,24 @@ export function toWei(value: DecimalInput, decimals: number): bigint {
 }
 
 /**
+ * Convert an integer wei value to a human-readable `Big` via
+ * precision-safe decimal division. Inverse of {@link toWei}.
+ *
+ * Used by the order-format path so the wei → display conversion is
+ * exact through the entire arithmetic chain; callers that need a
+ * `number` (e.g. for the public `Order` shape) take `.toNumber()` at
+ * the boundary, accepting the standard IEEE-754 rounding only at the
+ * final step rather than at every intermediate operation.
+ */
+export function fromWei(wei: bigint | string | number, decimals: number): Big {
+    if (!Number.isInteger(decimals) || decimals < 0) {
+        throw new Error(`fromWei: decimals must be a non-negative integer, got ${decimals}`);
+    }
+    const weiStr = typeof wei === 'bigint' ? wei.toString() : String(wei);
+    return new Big(weiStr).div(new Big(10).pow(decimals));
+}
+
+/**
  * Truncate `value` to `displayDecimals` fractional digits using ROUND_DOWN.
  *
  * Intended for callers that have already validated precision (so this

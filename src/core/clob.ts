@@ -25,6 +25,7 @@ import { withInstanceCache } from '../utils/cache.js';
 import {
     Big,
     toWei,
+    fromWei,
     checkDisplayPrecision,
     checkTradeAmountBounds,
 } from '../utils/decimal.js';
@@ -1672,27 +1673,22 @@ export class CLOBClient extends BaseClient {
                         ? orderData[8]
                         : String(orderData[8] ?? '');
 
+                // Big-based wei → display conversion is precision-exact
+                // through every intermediate step; .toNumber() at the
+                // boundary fits the public Order shape (price: number).
+                // Floating-point rounding only happens once, at the very
+                // last step, rather than at each arithmetic operation.
                 return Result.ok(
                     this._buildCanonicalOrder({
                         internalOrderId: this._toHexIdentifier(orderData[0]),
                         clientOrderId: this._toHexIdentifier(orderData[1]),
                         tradePairId,
                         pair: pairInfo.pair,
-                        price: parseFloat(
-                            Utils.unitConversion(orderData[3], pairInfo.quote_decimals, false)
-                        ),
-                        totalAmount: parseFloat(
-                            Utils.unitConversion(orderData[4], pairInfo.quote_decimals, false)
-                        ),
-                        quantity: parseFloat(
-                            Utils.unitConversion(orderData[5], pairInfo.base_decimals, false)
-                        ),
-                        quantityFilled: parseFloat(
-                            Utils.unitConversion(orderData[6], pairInfo.base_decimals, false)
-                        ),
-                        totalFee: parseFloat(
-                            Utils.unitConversion(orderData[7], pairInfo.quote_decimals, false)
-                        ),
+                        price: fromWei(orderData[3], pairInfo.quote_decimals).toNumber(),
+                        totalAmount: fromWei(orderData[4], pairInfo.quote_decimals).toNumber(),
+                        quantity: fromWei(orderData[5], pairInfo.base_decimals).toNumber(),
+                        quantityFilled: fromWei(orderData[6], pairInfo.base_decimals).toNumber(),
+                        totalFee: fromWei(orderData[7], pairInfo.quote_decimals).toNumber(),
                         traderAddress,
                         side: String(side),
                         type1: String(type1),

@@ -496,37 +496,59 @@ describe('TransferClient', () => {
     });
 
     describe('getAllPortfolioBalances', () => {
-        it('should iterate pages and return balances', async () => {
-             // Page 0 returns 1 item, Page 1 returns empty (stop)
-             mockContract.getBalances.mockResolvedValueOnce([['0xAvax'], [100n], [50n]])
-                                     .mockResolvedValueOnce([[], [], []]);
+        it('issues pages in parallel batches of 5 and stops when a page is empty', async () => {
+             // The first batch of 5 pages: page 0 has data, pages 1-4 are empty.
+             // The empty page in the batch signals end-of-data — no further batch
+             // is issued, so the call count is exactly BATCH_SIZE (5).
+             mockContract.getBalances.mockImplementation(async (_addr: string, page: number) => {
+                 if (page === 0) return [['0xAvax'], [100n], [50n]];
+                 return [[], [], []];
+             });
 
              const result = await client.getAllPortfolioBalances();
              expect(result.success).toBe(true);
              expect(result.data!['AVAX']).toBeDefined();
-             expect(mockContract.getBalances).toHaveBeenCalledTimes(2);
+             expect(mockContract.getBalances).toHaveBeenCalledTimes(5);
+        });
+
+        it('aggregates balances across multiple non-empty batches', async () => {
+             // Pages 0-5 have data; pages 6+ are empty. With BATCH_SIZE=5 the
+             // first batch returns all-data, the second batch contains the empty
+             // page and the loop terminates → 10 total calls (two batches).
+             mockContract.getBalances.mockImplementation(async (_addr: string, page: number) => {
+                 if (page <= 5) return [[`0xPage${page}`], [BigInt(page * 10)], [BigInt(page * 5)]];
+                 return [[], [], []];
+             });
+             (Utils.fromBytes32 as jest.Mock).mockImplementation((b: string) => b.replace(/^0x/, ''));
+
+             const result = await client.getAllPortfolioBalances();
+             expect(result.success).toBe(true);
+             expect(Object.keys(result.data!).length).toBe(6);  // pages 0..5
+             expect(mockContract.getBalances).toHaveBeenCalledTimes(10);
+
+             // Reset the fromBytes32 mock back to its describe-level default.
+             (Utils.fromBytes32 as jest.Mock).mockReturnValue('AVAX');
         });
 
         it('should compute locked from totals and availables', async () => {
-             // Override unitConversion to pass through numbers for this test
              const original = (Utils.unitConversion as jest.Mock).getMockImplementation();
-             (Utils.unitConversion as jest.Mock).mockImplementation((val, dec, toWei) => val.toString());
-             mockContract.getBalances.mockResolvedValueOnce([['0xAvax'], [200n], [150n]])
-                                     .mockResolvedValueOnce([[], [], []]);
+             (Utils.unitConversion as jest.Mock).mockImplementation((val, _dec, _toWei) => val.toString());
+             mockContract.getBalances.mockImplementation(async (_addr: string, page: number) => {
+                 if (page === 0) return [['0xAvax'], [200n], [150n]];
+                 return [[], [], []];
+             });
              const result = await client.getAllPortfolioBalances();
              expect(result.success).toBe(true);
              expect(result.data!['AVAX'].locked).toBe(50);
-             // restore
              (Utils.unitConversion as jest.Mock).mockImplementation(original as any);
         });
 
-        it('should safety break loop', async () => {
-              // Always return data
+        it('bails at PAGE_HARD_CAP when the backend keeps returning data', async () => {
+             // Always return data — the loop must terminate at PAGE_HARD_CAP=50.
              mockContract.getBalances.mockResolvedValue([['0xAvax'], [100n], [50n]]);
              const result = await client.getAllPortfolioBalances();
              expect(result.success).toBe(true);
-             expect(mockContract.getBalances).toHaveBeenCalled();
-             // It breaks at > 10 pages, preventing infinite loop
+             expect(mockContract.getBalances).toHaveBeenCalledTimes(50);
         });
 
         it('should return error if init missing', async () => {
