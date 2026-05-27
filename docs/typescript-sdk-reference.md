@@ -123,7 +123,7 @@ Top-level client. Composes CLOB, Swap, and Transfer functionality on top of `Bas
 
 **Balances:** `getPortfolioBalance(token, address?)`, `getAllPortfolioBalances(address?)`, `getChainWalletBalance(chain, token, address?)`, `getChainWalletBalances(chain, address?)`, `getAllChainWalletBalances(address?)`, `getChainTokenBalances(chain, tokens, address?)`.
 
-**Writes (CLOB):** `addOrder(req)`, `addOrderList(orders)`, `cancelOrder(id)`, `cancelOrderByClientId(id)`, `cancelListOrdersByClientId(ids)`, `replaceOrder(id, newPrice, newAmount)`, `cancelAddList(replacements)`.
+**Writes (CLOB):** `addOrder(req)`, `addLimitOrderList(orders)`, `cancelOrder(id)`, `cancelOrderByClientId(id)`, `cancelListOrdersByClientId(ids)`, `replaceOrder(id, newPrice, newAmount)`, `cancelAddList(replacements)`.
 
 **Writes (Transfer / Swap):** `deposit(token, amount, sourceChain, useLayerZero?)`, `withdraw(token, amount, destChain, useLayerZero?)`, `transferPortfolio(token, amount, toAddress)`, `transferToken(token, amount, toAddress)`, `addGas(amount)`, `removeGas(amount)`, `getSwapQuote(...)`, `getSwapFirmQuote(...)`, `getSwapSoftQuote(...)`, `executeRFQSwap(quote, waitForReceipt?)`.
 

@@ -185,7 +185,7 @@ const orders = [
     { pair: 'ALOT/USDC', side: 'BUY' as const, amount: 50.0, price: 0.14, type: 'LIMIT' as const },
     { pair: 'ALOT/USDC', side: 'BUY' as const, amount: 75.0, price: 0.13, type: 'LIMIT' as const },
 ];
-const result = await client.addOrderList(orders);
+const result = await client.addLimitOrderList(orders);
 ```
 
 Atomic cancel-and-replace (`cancelAddList`):

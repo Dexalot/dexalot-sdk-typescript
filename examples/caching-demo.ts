@@ -242,7 +242,7 @@ async function exampleWriteOperations(): Promise<void> {
     console.log('  - addOrder()');
     console.log('  - cancelOrder()');
     console.log('  - replaceOrder()');
-    console.log('  - addOrderList(), cancelAddList()');
+    console.log('  - addLimitOrderList(), cancelAddList()');
     console.log('  - deposit() / withdraw()');
     console.log('  - transferPortfolio()');
     console.log('  - addGas() / removeGas()');

@@ -1293,7 +1293,7 @@ export class CLOBClient extends BaseClient {
             }
         }
 
-        public async addOrderList(
+        public async addLimitOrderList(
             orders: OrderRequest[],
             waitForReceipt: boolean = true
         ): Promise<Result<{ txHash: string; clientOrderIds: string[]; operation: string }>> {
