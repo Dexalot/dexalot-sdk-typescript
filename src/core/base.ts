@@ -559,7 +559,11 @@ export class BaseClient {
             });
             (this as any).rfqPairs[chainId] = data;
         } catch (e) {
-            this._logger.warn('Failed to fetch RFQ pairs for chain', {
+            // Chains without an RFQ deployment legitimately return 404 here;
+            // logging at warn would create noise on every initialize. Keep the
+            // signal at debug — the failure is recoverable and the caller can
+            // still operate against chains that do have RFQ.
+            this._logger.debug('RFQ pairs unavailable for chain', {
                 chainId,
                 chainName,
                 error: this._sanitizeError(e, `fetching RFQ pairs for chain ${chainId}`)

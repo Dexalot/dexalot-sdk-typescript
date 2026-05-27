@@ -131,6 +131,16 @@ export interface TokenBalance {
     locked: number;
 }
 
+/**
+ * Firm quote returned by the Dexalot RFQ backend.
+ *
+ * The HTTP response wraps the executable quote inside
+ * `{"success": true, "quote": {...}}`; `_transformQuoteFromAPI` unwraps
+ * that envelope so callers always see the inner shape with `signature`
+ * and `order` at the top level (matching the contract's call surface).
+ * Envelope-layer failures (`{"success": false, "reason": "..."}`) are
+ * surfaced as `Result.fail` from `getSwapQuote` and never reach this type.
+ */
 export interface SwapQuote {
     pair: string;
     side: number;
@@ -138,15 +148,31 @@ export interface SwapQuote {
     amount: number;
     quoteId?: string;
     expiry?: number;
+    /** EIP-712 signature for the firm quote, used as the second `simpleSwap` arg. */
     signature?: string;
+    /** Executable RFQ order tuple keyed by snake_case+camelCase aliases. */
+    order?: {
+        nonceAndMeta?: string | number | bigint;
+        nonce_and_meta?: string | number | bigint;
+        expiry?: number | string;
+        makerAsset?: string;
+        maker_asset?: string;
+        takerAsset?: string;
+        taker_asset?: string;
+        maker?: string;
+        taker?: string;
+        makerAmount?: string | number | bigint;
+        maker_amount?: string | number | bigint;
+        takerAmount?: string | number | bigint;
+        taker_amount?: string | number | bigint;
+        [key: string]: unknown;
+    };
+    /** Mirrors the envelope `tx` field when the backend supplies a preflight tx hint. */
+    tx?: unknown;
+    chainId?: number;
+    /** Soft-quote / failure-envelope leftovers retained for backwards inspection. */
     success?: boolean;
     reason?: string;
-    chainId?: number;
-    secureQuote?: {
-        signature?: string;
-        data?: any;
-        order?: any;
-    };
-    // ... other RFQ fields
+    [key: string]: unknown;
 }
 

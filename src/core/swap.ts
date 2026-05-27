@@ -6,6 +6,20 @@ import { Result } from '../utils/result.js';
 import { withInstanceCache } from '../utils/cache.js';
 import { validateSwapParams, validateChainIdentifier } from '../utils/inputValidators.js';
 
+/**
+ * MainnetRFQ uses the zero address to mean "the chain's native coin"
+ * (e.g. AVAX on 43114). When the taker is selling native, `msg.value`
+ * must equal `takerAmount`; for ERC20 takers it must be 0.
+ */
+const NATIVE_ZERO_ADDRESS = '0x' + '0'.repeat(40);
+
+/**
+ * Default multiplier applied to the simpleSwap gas estimate to absorb
+ * variance at submission time. Mirrors the existing DEFAULTS.GAS_BUFFER
+ * pattern used in TRANSFER paths.
+ */
+const SWAP_GAS_BUFFER = DEFAULTS.GAS_BUFFER;
+
 export class SwapClient extends CLOBClient {
 
         public rfqPairs: Record<number, any> = {};
@@ -39,86 +53,71 @@ export class SwapClient extends CLOBClient {
         }
 
         /**
-         * Transform API quote response to match standardized field names (camelCase).
-         * Maps lowercase/snake_case API fields to camelCase SDK fields.
-         * Preserves existing camelCase fields if present, otherwise transforms from alternative formats.
+         * Normalize a Dexalot firm-quote response.
+         *
+         * The HTTP response wraps the executable firm quote inside
+         * `{"success": true, "quote": {...}}`. This helper unwraps that
+         * envelope so downstream code operates on the inner dict, then
+         * applies snake_case → camelCase aliases for top-level
+         * identifiers and normalizes the inner `order` dict.
+         *
+         * Original keys are preserved; nothing is popped or renamed.
+         * Envelope-layer failures (`{"success": false, "reason": ...}`)
+         * are caught at the fetch site in `getSwapQuote` BEFORE the
+         * transform runs, so this method never sees them.
          */
         private _transformQuoteFromAPI(quote: any): SwapQuote {
+            // Unwrap {success: true, quote: {...}} envelope.
+            if (
+                quote && typeof quote === 'object' &&
+                quote.quote && typeof quote.quote === 'object'
+            ) {
+                quote = quote.quote;
+            }
+
             const transformed: any = { ...quote };
 
-            // Transform chainId: prefer existing camelCase, fallback to lowercase/snake_case
+            // Map chainId: prefer existing camelCase, fallback to lowercase/snake_case.
             if (!transformed.chainId) {
                 transformed.chainId = quote.chainid ?? quote.chain_id;
             }
 
-            // Transform secureQuote: prefer existing camelCase, fallback to lowercase/snake_case
-            if (transformed.secureQuote) {
-                // Already exists, but ensure nested fields are transformed
-                transformed.secureQuote = this._transformSecureQuoteFromAPI(transformed.secureQuote);
-            } else if (quote.securequote) {
-                transformed.secureQuote = this._transformSecureQuoteFromAPI(quote.securequote);
-            } else if (quote.secure_quote) {
-                transformed.secureQuote = this._transformSecureQuoteFromAPI(quote.secure_quote);
-            } else if (quote.secureQuote) {
-                transformed.secureQuote = this._transformSecureQuoteFromAPI(quote.secureQuote);
-            }
-
-            // Transform quoteId: prefer existing camelCase, fallback to lowercase/snake_case
+            // Map quoteId: prefer existing camelCase, fallback to lowercase/snake_case.
             if (!transformed.quoteId) {
                 transformed.quoteId = quote.quoteid ?? quote.quote_id;
+            }
+
+            // Normalize the inner order dict so downstream code can read
+            // camelCase keys regardless of what the backend emitted.
+            if (transformed.order && typeof transformed.order === 'object') {
+                transformed.order = this._transformOrderDataFromAPI(transformed.order);
             }
 
             return transformed as SwapQuote;
         }
 
         /**
-         * Transform secureQuote object fields to camelCase.
-         */
-        private _transformSecureQuoteFromAPI(secureQuote: any): any {
-            if (!secureQuote) return secureQuote;
-
-            const transformed: any = { ...secureQuote };
-
-            // Transform data/order object if present
-            if (secureQuote.data) {
-                transformed.data = this._transformOrderDataFromAPI(secureQuote.data);
-            }
-            if (secureQuote.order) {
-                transformed.order = this._transformOrderDataFromAPI(secureQuote.order);
-            }
-
-            return transformed;
-        }
-
-        /**
-         * Transform order data object fields to camelCase.
+         * Transform order data object fields to camelCase aliases. The
+         * original snake_case keys are preserved alongside the aliases
+         * so callers reading either shape continue to work.
          */
         private _transformOrderDataFromAPI(orderData: any): any {
             if (!orderData) return orderData;
 
             const transformed: any = { ...orderData };
 
-            // Transform nonceAndMeta: prefer existing camelCase, fallback to snake_case
             if (transformed.nonceAndMeta === undefined) {
                 transformed.nonceAndMeta = orderData.nonce_and_meta;
             }
-
-            // Transform makerAsset: prefer existing camelCase, fallback to snake_case
             if (transformed.makerAsset === undefined) {
                 transformed.makerAsset = orderData.maker_asset;
             }
-
-            // Transform takerAsset: prefer existing camelCase, fallback to snake_case
             if (transformed.takerAsset === undefined) {
                 transformed.takerAsset = orderData.taker_asset;
             }
-
-            // Transform makerAmount: prefer existing camelCase, fallback to snake_case
             if (transformed.makerAmount === undefined) {
                 transformed.makerAmount = orderData.maker_amount;
             }
-
-            // Transform takerAmount: prefer existing camelCase, fallback to snake_case
             if (transformed.takerAmount === undefined) {
                 transformed.takerAmount = orderData.taker_amount;
             }
@@ -173,10 +172,10 @@ export class SwapClient extends CLOBClient {
          * Get a swap quote (firm or indicative).
          */
         public async getSwapQuote(
-            fromToken: string, 
-            toToken: string, 
-            amount: number, 
-            firm: boolean = false, 
+            fromToken: string,
+            toToken: string,
+            amount: number,
+            firm: boolean = false,
             chainId?: number
         ): Promise<Result<SwapQuote>> {
             const validationResult = validateSwapParams(fromToken, toToken, amount);
@@ -185,7 +184,7 @@ export class SwapClient extends CLOBClient {
             }
 
             const cid = chainId || this.chainId;
-            
+
             try {
                 const pair = await this._resolvePair(fromToken, toToken, cid);
                 if (!pair) {
@@ -194,12 +193,12 @@ export class SwapClient extends CLOBClient {
 
                 const isBase = pair.isBase;
                 const side = pair.tradeSide;
-                
+
                 const params: any = {
                     chainid: cid,
                     pair: pair.name,
                     amount: amount.toString(),
-                    isbase: isBase ? "1" : "0",
+                    isbase: isBase ? '1' : '0',
                     side: side.toString(),
                 };
 
@@ -213,7 +212,18 @@ export class SwapClient extends CLOBClient {
                     params['taker'] = DEFAULTS.TAKER_ADDRESS;
                 }
 
-                const data = await this._apiCall<SwapQuote>('get', endpoint, { params });
+                const data = await this._apiCall<any>('get', endpoint, { params });
+
+                // Envelope-layer failure: Dexalot RFQ returns
+                // {"success": false, "reason": "..."} on logical failure even
+                // with HTTP 200. Surface that as Result.fail BEFORE the
+                // transform runs, so callers see the reason verbatim and
+                // executeRFQSwap never operates on a garbage payload.
+                if (data && typeof data === 'object' && data.success === false) {
+                    const reason = data.reason || data.error || 'Quote API returned success=false';
+                    return Result.fail(`Cannot execute failed quote: ${reason}`);
+                }
+
                 const transformed = this._transformQuoteFromAPI(data);
                 return Result.ok(transformed);
             } catch (e) {
@@ -225,9 +235,9 @@ export class SwapClient extends CLOBClient {
          * Get a firm quote for swap execution.
          */
         public async getSwapFirmQuote(
-            fromToken: string, 
-            toToken: string, 
-            amount: number, 
+            fromToken: string,
+            toToken: string,
+            amount: number,
             chainId?: number
         ): Promise<Result<SwapQuote>> {
             return this.getSwapQuote(fromToken, toToken, amount, true, chainId);
@@ -237,9 +247,9 @@ export class SwapClient extends CLOBClient {
          * Get an indicative (soft) quote.
          */
         public async getSwapSoftQuote(
-            fromToken: string, 
-            toToken: string, 
-            amount: number, 
+            fromToken: string,
+            toToken: string,
+            amount: number,
             chainId?: number
         ): Promise<Result<SwapQuote>> {
             return this.getSwapQuote(fromToken, toToken, amount, false, chainId);
@@ -250,11 +260,11 @@ export class SwapClient extends CLOBClient {
             if (!pairsResult.success) {
                 return null;
             }
-            
+
             const pairs = pairsResult.data;
             const p1 = `${from}/${to}`;
             const p2 = `${to}/${from}`;
-            
+
             if (pairs[p1]) return { name: p1, tradeSide: 1, isBase: true };
             if (pairs[p2]) return { name: p2, tradeSide: 0, isBase: false };
 
@@ -262,7 +272,99 @@ export class SwapClient extends CLOBClient {
         }
 
         /**
+         * Coerce an order field to bigint, accepting decimal or 0x-hex
+         * strings. `nonceAndMeta` arrives 0x-prefixed; `makerAmount` /
+         * `takerAmount` arrive as decimal strings; `expiry` arrives as a
+         * JSON number. `BigInt()` itself accepts both 0x-hex and decimal
+         * representations so a single call covers all of them.
+         */
+        protected _orderFieldToBigInt(value: unknown): bigint {
+            if (value === null || value === undefined || value === '') return 0n;
+            if (typeof value === 'bigint') return value;
+            if (typeof value === 'number') return BigInt(value);
+            return BigInt(String(value));
+        }
+
+        /**
+         * Compute the `msg.value` to attach to a SimpleSwap call.
+         *
+         * MainnetRFQ requires `msg.value == takerAmount` when the taker
+         * is sending the chain's native token (`takerAsset` is the zero
+         * address), and `msg.value == 0` otherwise. Passing the wrong
+         * value here causes the contract's `_checkValue` to revert.
+         */
+        protected _computeMsgValue(orderData: any): bigint {
+            const takerAsset = String(
+                orderData.takerAsset ?? orderData.taker_asset ?? ''
+            ).toLowerCase();
+            if (takerAsset === NATIVE_ZERO_ADDRESS) {
+                return this._orderFieldToBigInt(
+                    orderData.takerAmount ?? orderData.taker_amount
+                );
+            }
+            return 0n;
+        }
+
+        /**
+         * Best-effort extraction of the on-chain revert reason for a
+         * failed tx. Re-runs the original transaction as `eth_call`
+         * against the block in which it reverted; the node returns the
+         * revert message (e.g. `execution reverted: RF-EXP-01`) which is
+         * otherwise dropped from the receipt. Returns `null` if the call
+         * cannot be replayed or the node refuses to surface a reason.
+         */
+        protected async _extractRevertReason(
+            provider: any,
+            tx: any,
+            receipt: any
+        ): Promise<string | null> {
+            try {
+                const blockTag = receipt && receipt.blockNumber != null
+                    ? receipt.blockNumber
+                    : undefined;
+                const callTx: any = {
+                    from: tx.from,
+                    to: tx.to,
+                    data: tx.data,
+                };
+                if (tx.value !== undefined && tx.value !== null) {
+                    callTx.value = tx.value;
+                }
+                if (tx.gasLimit !== undefined) {
+                    callTx.gasLimit = tx.gasLimit;
+                }
+                if (blockTag !== undefined) {
+                    callTx.blockTag = blockTag;
+                }
+
+                try {
+                    await provider.call(callTx);
+                    return null;
+                } catch (callExc) {
+                    const msg = String((callExc as any)?.message ?? callExc);
+                    const marker = 'execution reverted';
+                    const idx = msg.indexOf(marker);
+                    if (idx !== -1) {
+                        const after = msg.slice(idx + marker.length)
+                            .replace(/^[\s:]+/, '')
+                            .replace(/^["']|["']$/g, '')
+                            .trim();
+                        return after || marker;
+                    }
+                    return msg.slice(0, 200) || null;
+                }
+            } catch {
+                return null;
+            }
+        }
+
+        /**
          * Execute an RFQ swap using a firm quote.
+         *
+         * Accepts either the inner firm-quote dict (with top-level
+         * `signature` and `order` fields) or the raw envelope from
+         * the firm-quote API (`{"success": true, "quote": {...}}`) —
+         * the envelope is unwrapped automatically.
          */
         public async executeRFQSwap(
             quote: any,
@@ -272,24 +374,18 @@ export class SwapClient extends CLOBClient {
                 return Result.fail('Signer required');
             }
 
-            // Transform quote to ensure standardized field names
+            // Transform also unwraps the {success, quote} envelope.
             const transformedQuote = this._transformQuoteFromAPI(quote);
-            
-            const secureQuote = transformedQuote.secureQuote;
-            if (!secureQuote) {
-                return Result.fail('Invalid quote: missing secureQuote');
-            }
 
-            const sig = secureQuote.signature;
-            const orderData = secureQuote.data || secureQuote.order;
-
+            const sig = transformedQuote.signature;
+            const orderData = transformedQuote.order;
             if (!sig || !orderData) {
-                return Result.fail('Invalid secure quote: missing signature or order data');
+                return Result.fail("Invalid firm quote: missing 'signature' or 'order' field.");
             }
 
             const chainId = transformedQuote.chainId || this.chainId;
             const chainName = this._getChainNameFromId(chainId);
-            
+
             if (!chainName) {
                 return Result.fail(`Unknown chain ID: ${chainId}`);
             }
@@ -311,8 +407,14 @@ export class SwapClient extends CLOBClient {
                     orderData.maker,
                     orderData.taker,
                     orderData.makerAmount,
-                    orderData.takerAmount
+                    orderData.takerAmount,
                 ];
+
+                // MainnetRFQ requires msg.value == takerAmount for native
+                // sells (takerAsset == zero address), 0 otherwise. Pass the
+                // same value to estimateGas so the estimator sees the call
+                // shape the contract will validate.
+                const msgValue = this._computeMsgValue(orderData);
 
                 return await this.withRpcFailover(chainName, async (provider) => {
                     const contract = this._contractForSigner(
@@ -320,12 +422,32 @@ export class SwapClient extends CLOBClient {
                         rfqDep.address,
                         rfqDep.abi
                     );
-                    const tx = await contract.simpleSwap(orderTuple, sig);
-                    
+
+                    const gasEst = await contract.simpleSwap.estimateGas(
+                        orderTuple,
+                        sig,
+                        { value: msgValue }
+                    );
+                    const gasLimit = BigInt(Math.floor(Number(gasEst) * SWAP_GAS_BUFFER));
+
+                    const tx: TransactionResponse = await contract.simpleSwap(
+                        orderTuple,
+                        sig,
+                        { value: msgValue, gasLimit }
+                    );
+
                     if (waitForReceipt) {
                         const receipt = await tx.wait();
                         if (!receipt || receipt.status !== 1) {
-                            return Result.fail("Transaction reverted");
+                            const detailParts: string[] = [`tx=${tx.hash}`];
+                            if (receipt?.blockNumber != null) {
+                                detailParts.push(`block=${receipt.blockNumber}`);
+                            }
+                            const reason = await this._extractRevertReason(provider, tx, receipt);
+                            if (reason) {
+                                detailParts.push(`reason=${reason}`);
+                            }
+                            return Result.fail(`Transaction reverted: ${detailParts.join(', ')}`);
                         }
                         return Result.ok({ txHash: receipt.hash, operation: 'execute_rfq_swap' });
                     }
