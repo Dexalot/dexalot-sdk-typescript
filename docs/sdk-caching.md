@@ -57,14 +57,20 @@ const client = new DexalotClient(createConfig({
 
 **Purpose:** user-specific balance data.
 
-> **Status:** the `cacheTtlBalance` config is wired through to `DexalotConfig`
-> but is not currently applied to balance-query methods
-> (`getPortfolioBalance`, `getAllPortfolioBalances`, `getChainWalletBalance`,
-> `getChainWalletBalances`, `getAllChainWalletBalances`). These methods
-> currently return live data on every call. If you need client-side balance
-> caching today, wrap the call in your own TTL cache.
+**Cached methods:**
+- `getPortfolioBalance(token, address?)`
+- `getAllPortfolioBalances(address?)`
+- `getChainWalletBalance(chain, token, address?)`
+- `getChainWalletBalances(chain, address?)`
+- `getAllChainWalletBalances(address?)`
+- `getChainTokenBalances(chain, tokens, address?)` — token list is sorted+deduped before delegating to the cached internal, so the same set in different order shares one cache slot.
 
-Configurable for forward compatibility:
+Balance data is keyed by `(method, apiBaseUrl, args)` — the wallet address is part of the args, so different users have independent cache entries.
+
+**When to customize:**
+- Higher TTL (30–60 seconds) for read-heavy applications.
+- Lower TTL (1–5 seconds) for near-real-time balance UIs.
+- Set to `0` to effectively disable balance caching.
 
 ```ts
 const client = new DexalotClient(createConfig({
@@ -74,10 +80,14 @@ const client = new DexalotClient(createConfig({
 
 ### 4. Orderbook Cache (default: 1 second)
 
-**Purpose:** real-time orderbook data.
+**Purpose:** real-time orderbook and market-data.
 
 **Cached methods:**
 - `getOrderBook(pair)`
+- `getCandles(pair, interval, limit)`
+- `getMarketSnapshot()`
+
+`get24hStats(pair)` is not directly cached — it filters the cached `getMarketSnapshot()` envelope client-side, so multiple per-pair calls within the same 1 s window share a single network fetch.
 
 **When to customize:**
 - Higher TTL (2–5 seconds) if slight delays are acceptable.
@@ -109,7 +119,7 @@ const client = new DexalotClient(createConfig({
     cacheEnabled: true,
     cacheTtlStatic: 7200,      // 2 hours
     cacheTtlSemiStatic: 1800,  // 30 minutes
-    cacheTtlBalance: 5,        // 5 seconds (no-op today — see note above)
+    cacheTtlBalance: 5,        // 5 seconds
     cacheTtlOrderbook: 0.5,    // 500 ms
 }));
 ```
