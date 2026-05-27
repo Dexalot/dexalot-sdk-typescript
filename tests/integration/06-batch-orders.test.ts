@@ -30,7 +30,7 @@ describe('Integration: Batch Orders', () => {
             { pair, side: 'SELL' as const, amount: 0.5, price: 19.1, type: 'LIMIT' as const },
         ];
         
-        const result = await client.addOrderList(ordersToPlace);
+        const result = await client.addLimitOrderList(ordersToPlace);
         expect(result.success).toBe(true);
         expect(result.data!.txHash).toBeDefined();
         console.log('Placed Batch Orders');

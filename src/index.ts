@@ -10,8 +10,16 @@ export type { DexalotConfig } from './core/config.js';
 export { createConfig, loadConfigFromEnv } from './core/config.js';
 export { MemoryCache } from './utils/cache.js';
 export { Result } from './utils/result.js';
-export { getLogger } from './utils/observability.js';
-export type { Logger } from './utils/observability.js';
+export {
+    getLogger,
+    configureLogging,
+    withRequestId,
+    setRequestId,
+    getRequestId,
+    getLogLevel,
+    getLogFormat,
+} from './utils/observability.js';
+export type { Logger, LogLevel } from './utils/observability.js';
 export { version };
 
 export function getVersion(): string {

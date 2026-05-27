@@ -80,8 +80,8 @@ messages.
 - `BaseClient._sanitizeError()` calls these internally. Full error
   details (including stack traces) are logged; only the sanitized message
   is returned to callers.
-- `SwapMixin.getSwapQuote()` and other user-facing methods sanitize caught
-  exceptions before surfacing them.
+- `SwapMixin.getSwapFirmQuote()` / `getSwapSoftQuote()` and other user-facing
+  methods sanitize caught exceptions before surfacing them.
 
 **Configuration:** none. Patterns are hardcoded for security — the
 point is that they can't be turned off.

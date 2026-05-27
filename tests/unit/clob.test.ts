@@ -1129,18 +1129,18 @@ describe('CLOBClient', () => {
     });
 
 
-    describe('addOrderList', () => {
+    describe('addLimitOrderList', () => {
          it('should add multiple orders', async () => {
-             mockContract.addOrderList.mockResolvedValue({ 
+             mockContract.addOrderList.mockResolvedValue({
                  hash: '0xAddListHash',
                  wait: jest.fn().mockResolvedValue({ status: 1, hash: '0xAddListHash' })
              });
-             
+
              const reqs: any[] = [
                  { pair: 'AVAX/USDC', side: 'BUY', amount: 10, price: 20 },
                  { pair: 'AVAX/USDC', side: 'SELL', amount: 5, price: 25 }
              ];
-             const result = await client.addOrderList(reqs);
+             const result = await client.addLimitOrderList(reqs);
              expect(result.success).toBe(true);
              expect(result.data!.txHash).toBe('0xAddListHash');
              expect(result.data!.clientOrderIds).toHaveLength(2);
@@ -1149,14 +1149,14 @@ describe('CLOBClient', () => {
           it('should fail if pair missing', async () => {
                mockAxios.request.mockResolvedValue({ data: [] });
                // Use cast to allow invalid side for test
-               const result = await client.addOrderList([{ pair: 'MISSING/PAIR', side: 'B', amount: 1, price: 10} as any]);
+               const result = await client.addLimitOrderList([{ pair: 'MISSING/PAIR', side: 'B', amount: 1, price: 10} as any]);
                expect(result.success).toBe(false);
                expect(result.error).toContain('Pair MISSING/PAIR not found');
           });
-          
+
           it('should log and return error', async () => {
                mockContract.addOrderList.estimateGas.mockRejectedValue(new Error("Fail"));
-               const result = await client.addOrderList([]);
+               const result = await client.addLimitOrderList([]);
                expect(result.success).toBe(false);
                expect(result.error).toContain('Fail');
                // expect(console.error).toHaveBeenCalled(); // Sanitized error logging
@@ -1164,12 +1164,12 @@ describe('CLOBClient', () => {
 
          it('should return error if signer/contract not initialized', async () => {
               client.signer = undefined as any;
-              const result = await client.addOrderList([]);
+              const result = await client.addLimitOrderList([]);
               expect(result.success).toBe(false);
               expect(result.error).toContain('Signer/Contract not initialized');
          });
 
-         it('should handle missing price in addOrderList', async () => {
+         it('should handle missing price in addLimitOrderList', async () => {
              mockContract.addOrderList.mockResolvedValue({
                  hash: '0xAddListHash',
                  wait: jest.fn().mockResolvedValue({ status: 1, hash: '0xAddListHash' })
@@ -1179,7 +1179,7 @@ describe('CLOBClient', () => {
              const reqs: any[] = [
                  { pair: 'AVAX/USDC', side: 'BUY', type: 'MARKET', amount: 10, price: undefined }
              ];
-             const result = await client.addOrderList(reqs);
+             const result = await client.addLimitOrderList(reqs);
              expect(result.success).toBe(true);
              // Price should default to 0 when undefined
              const callArgs = mockContract.addOrderList.mock.calls[0][0];
@@ -1191,7 +1191,7 @@ describe('CLOBClient', () => {
                  { pair: 'AVAX/USDC', side: 'BUY', amount: 1, price: 20 },
                  { pair: 'AVAX/USDC', side: 'SELL', amount: 0.123, price: 25 },  // 3 decimals > 2
              ];
-             const result = await client.addOrderList(reqs);
+             const result = await client.addLimitOrderList(reqs);
              expect(result.success).toBe(false);
              expect(result.error).toContain('more than 2 decimals');
              expect(mockContract.addOrderList).not.toHaveBeenCalled();
@@ -1439,17 +1439,17 @@ describe('CLOBClient', () => {
          });
     });
 
-    describe('addOrderList Enums', () => {
+    describe('addLimitOrderList Enums', () => {
         it('should handle SELL side in list', async () => {
-             mockContract.addOrderList.mockResolvedValue({ 
+             mockContract.addOrderList.mockResolvedValue({
                  hash: '0xAddListHash',
                  wait: jest.fn().mockResolvedValue({ status: 1, hash: '0xAddListHash' })
              });
-             
+
              const reqs: any[] = [
                  { pair: 'AVAX/USDC', side: 'SELL', amount: 5, price: 25 }
              ];
-             await client.addOrderList(reqs);
+             await client.addLimitOrderList(reqs);
              const callArgs = mockContract.addOrderList.mock.calls[0][0];
              expect(callArgs[0][5]).toBe(1); // SELL
         });
@@ -1491,10 +1491,10 @@ describe('CLOBClient', () => {
             );
         });
 
-        it('addOrderList should fail if price missing (validation)', async () => {
+        it('addLimitOrderList should fail if price missing (validation)', async () => {
             // Order without price - validation should fail
             const reqs: any[] = [{ pair: 'AVAX/USDC', side: 'BUY', amount: 5 }]; // No price
-            const result = await client.addOrderList(reqs);
+            const result = await client.addLimitOrderList(reqs);
             expect(result.success).toBe(false);
             expect(result.error).toContain('price is required');
         });
@@ -1607,15 +1607,15 @@ describe('CLOBClient', () => {
             // When waitForReceipt=false, tx.wait() is never called
         });
 
-        it('should not wait for receipt when waitForReceipt=false in addOrderList', async () => {
+        it('should not wait for receipt when waitForReceipt=false in addLimitOrderList', async () => {
             const tx = { hash: '0xAddListHash' };
             mockContract.addOrderList.mockResolvedValue(tx);
-            
+
             const reqs = [
                 { pair: 'AVAX/USDC', side: 'BUY', amount: 1.0, price: 25.0 }
             ];
-            const result = await client.addOrderList(reqs, false);
-            
+            const result = await client.addLimitOrderList(reqs, false);
+
             expect(result.success).toBe(true);
             expect(result.data!.txHash).toBe('0xAddListHash');
             // When waitForReceipt=false, tx.wait() is never called
@@ -1728,18 +1728,18 @@ describe('CLOBClient', () => {
             expect(result.error).toBe("Transaction reverted");
         });
 
-        it('should return error when receipt status is not 1 in addOrderList', async () => {
+        it('should return error when receipt status is not 1 in addLimitOrderList', async () => {
             const tx = {
                 hash: '0xAddListHash',
                 wait: jest.fn().mockResolvedValue({ status: 0, hash: '0xAddListHash' })
             };
             mockContract.addOrderList.mockResolvedValue(tx);
-            
+
             const reqs = [
                 { pair: 'AVAX/USDC', side: 'BUY', amount: 1.0, price: 25.0 }
             ];
-            const result = await client.addOrderList(reqs, true);
-            
+            const result = await client.addLimitOrderList(reqs, true);
+
             expect(result.success).toBe(false);
             expect(result.error).toBe("Transaction reverted");
         });
