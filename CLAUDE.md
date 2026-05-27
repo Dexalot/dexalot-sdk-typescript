@@ -177,7 +177,7 @@ there are no locks or async waits. Instantiated with
   install --frozen-lockfile`. Keep both lockfiles in sync after
   dependency changes (run `pnpm install` then `npm install`).
 - **Node version**: `engines.node >= 20`. CI matrices against
-  Node 20 and 22; the release workflow pins Node 22.
+  Node 20, 22, and 24; the release workflow pins Node 22.
 - **TypeScript**: `5.9.3`, pinned exactly. Strict mode enabled.
 - **Setup**: `pnpm install && pnpm build`.
 - **Test**: `pnpm test` (all) / `pnpm test:unit` (unit, fast) /
@@ -228,7 +228,7 @@ removing the `prepare` script breaks `github:` installs — **don't**.
 
 `.github/workflows/ci.yml` runs on every PR, every push to `main`, a
 weekly Monday 12:00 UTC cron, and `workflow_dispatch`. The job
-matrices against Node 20 and 22 (fail-fast off).
+matrices against Node 20, 22, and 24 (fail-fast off).
 
 **Steps, in order:**
 
