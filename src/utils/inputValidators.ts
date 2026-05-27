@@ -7,7 +7,9 @@ import { Result } from './result.js';
 
 // Pre-compiled regex patterns for efficiency
 const ADDRESS_PATTERN = /^0x[a-fA-F0-9]{40}$/;
-const PAIR_PATTERN = /^[A-Z0-9]+\/[A-Z0-9]+$/;
+// Case-insensitive: callers may pass 'avax/usdc' and have it normalized
+// to canonical 'AVAX/USDC' downstream (e.g. via normalizeTradingPair).
+const PAIR_PATTERN = /^[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/;
 const ORDER_ID_HEX_BODY_PATTERN = /^[0-9a-fA-F]+$/;
 const TOKEN_SYMBOL_PATTERN = /^[A-Z0-9]{1,10}$/;
 

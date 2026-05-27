@@ -305,6 +305,21 @@ removing the `prepare` script breaks `github:` installs — **don't**.
   `toWei(value, decimals)`. Do not reintroduce
   `parseFloat(value.toFixed(N))` rounding in any write path — that is
   silent slippage (a stop at 99.99 silently becoming 99.9).
+- **Public market-data endpoints live under `/api/`, not `/privapi/`**:
+  most SDK calls hit `/privapi/...`, but `getCandles` and
+  `getMarketSnapshot` (and therefore `get24hStats`) hit
+  `/api/trading/candle-chunk` and `/api/stats/market-snapshot`
+  because those routes are only mounted on the public `/api/` tree
+  on the backend. Same host, different prefix — see
+  `ENDPOINTS.TRADING_CANDLE_CHUNK` and `ENDPOINTS.STATS_MARKET_SNAPSHOT`
+  in `constants.ts`. Do not move them to the `privapi` prefix.
+- **`getChainTokenBalances` cache key is order-insensitive**: the
+  public method coerces `tokens: string[]` into a sorted deduped
+  array via `Array.from(new Set(tokens.map(normalizeToken))).sort()`
+  before delegating to the cached internal, so `['AVAX', 'USDC']`
+  and `['USDC', 'AVAX']` share a cache slot. Token symbols are also
+  canonicalized through `normalizeToken` so casing variants and
+  known aliases collapse.
 - **All TRANSFER write paths route through `toWei`**: `deposit`,
   `withdraw`, `transferPortfolio`, `addGas`, `removeGas`, and
   `getDepositBridgeFee` all encode their user-supplied amount via

@@ -1534,4 +1534,137 @@ describe('TransferClient', () => {
         });
     });
 
+    describe('getChainTokenBalances', () => {
+        const validAddress = '0x1234567890123456789012345678901234567890';
+
+        beforeEach(() => {
+            // resolveChainReference exists on the base client; in this fixture
+            // the mock just returns the chain name as canonical.
+            jest.spyOn(client, 'resolveChainReference').mockImplementation(
+                ((c: string | number) => ({
+                    success: true,
+                    data: { canonicalName: String(c), chainId: 0, originalInput: c, isDexalotL1: c === 'Dexalot L1' },
+                })) as any
+            );
+
+            jest.spyOn(client, 'getChainWalletBalance').mockImplementation(
+                async (chain: string, token: string) => {
+                    if (token === 'UNK') {
+                        return { success: false, error: `Token ${token} not available on chain ${chain}.` } as any;
+                    }
+                    if (token === 'BOOM') {
+                        return { success: false, error: 'something broke' } as any;
+                    }
+                    return { success: true, data: { chain, symbol: token, balance: `${token.length}.0` } } as any;
+                }
+            );
+        });
+
+        it('returns a flat token -> balance map for an explicit token list', async () => {
+            const result = await client.getChainTokenBalances('Avalanche', ['AVAX', 'USDC'], validAddress);
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual({ AVAX: '4.0', USDC: '4.0' });
+        });
+
+        it('sorts and dedupes tokens before delegating (order-insensitive cache key)', async () => {
+            const r1 = await client.getChainTokenBalances('Avalanche', ['AVAX', 'USDC'], validAddress);
+            (client.getChainWalletBalance as jest.Mock).mockClear();
+
+            // Second call with the same set in different order + a duplicate must
+            // serve from cache (no further getChainWalletBalance calls).
+            const r2 = await client.getChainTokenBalances('Avalanche', ['USDC', 'AVAX', 'AVAX'], validAddress);
+
+            expect(r1.success).toBe(true);
+            expect(r2.success).toBe(true);
+            expect(r1.data).toEqual(r2.data);
+            expect(client.getChainWalletBalance).not.toHaveBeenCalled();
+        });
+
+        it('aggregates unknown tokens into a single error', async () => {
+            const result = await client.getChainTokenBalances('Avalanche', ['AVAX', 'UNK'], validAddress);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Unknown tokens on chain Avalanche');
+            expect(result.error).toContain('UNK');
+        });
+
+        it('aggregates non-unknown errors into a semicolon-joined list', async () => {
+            const result = await client.getChainTokenBalances('Avalanche', ['AVAX', 'BOOM'], validAddress);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('BOOM: something broke');
+        });
+
+        it('captures thrown errors via _sanitizeError', async () => {
+            (client.getChainWalletBalance as jest.Mock).mockImplementationOnce(async () => {
+                throw new Error('network blip');
+            });
+            const result = await client.getChainTokenBalances('Avalanche', ['AVAX'], validAddress);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('AVAX');
+            expect(result.error).toContain('network blip');
+        });
+
+        it('rejects an empty or non-array tokens argument', async () => {
+            expect((await client.getChainTokenBalances('Avalanche', [], validAddress)).success).toBe(false);
+            expect((await client.getChainTokenBalances('Avalanche', null as any, validAddress)).success).toBe(false);
+        });
+
+        it('rejects an empty / non-string chain argument', async () => {
+            expect((await client.getChainTokenBalances('', ['AVAX'], validAddress)).success).toBe(false);
+            expect((await client.getChainTokenBalances('   ', ['AVAX'], validAddress)).success).toBe(false);
+            expect((await client.getChainTokenBalances(123 as any, ['AVAX'], validAddress)).success).toBe(false);
+        });
+
+        it('rejects malformed token symbols', async () => {
+            const result = await client.getChainTokenBalances('Avalanche', ['AVAX', 'bad token'], validAddress);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('tokens');
+        });
+
+        it('propagates an unresolved chain error', async () => {
+            (client.resolveChainReference as jest.Mock).mockReturnValueOnce({
+                success: false,
+                error: "Chain 'Solana' is not recognized",
+            });
+            const result = await client.getChainTokenBalances('Solana', ['AVAX'], validAddress);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('not recognized');
+        });
+
+        it('uses a static fallback when resolveChainReference returns no error string', async () => {
+            (client.resolveChainReference as jest.Mock).mockReturnValueOnce({
+                success: false,
+            });
+            const result = await client.getChainTokenBalances('Solana', ['AVAX'], validAddress);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain("Could not resolve chain 'Solana'");
+        });
+
+        it('treats a failing per-token Result with no error string as unknown', async () => {
+            (client.getChainWalletBalance as jest.Mock).mockImplementation(async (_c, t) => {
+                if (t === 'AVAX') return { success: true, data: { balance: '1.0' } };
+                return { success: false } as any; // no error message
+            });
+            const result = await client.getChainTokenBalances('Avalanche', ['AVAX', 'X'], validAddress);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('X: unknown error');
+        });
+
+        it('emits empty-string balance when getChainWalletBalance returns data without a balance field', async () => {
+            (client.getChainWalletBalance as jest.Mock).mockImplementation(async (_c, t) => ({
+                success: true,
+                data: { chain: 'Avalanche', symbol: t },  // balance omitted
+            }));
+            const result = await client.getChainTokenBalances('Avalanche', ['AVAX'], validAddress);
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual({ AVAX: '' });
+        });
+
+        it('returns a fail Result when address is required but not provided and signer is missing', async () => {
+            client.signer = undefined as any;
+            const result = await client.getChainTokenBalances('Avalanche', ['AVAX']);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Address required');
+        });
+    });
+
 });

@@ -1,7 +1,23 @@
 import { Contract, ethers, TransactionResponse, toBigInt } from 'ethers';
 import { Utils } from '../utils/index.js';
-import { OrderRequest, Pair, OrderBook, Order } from '../types/index.js';
+import { OrderRequest, Pair, OrderBook, Order, Candle, MarketSnapshot } from '../types/index.js';
 import { ENDPOINTS, ENV, DEFAULTS, wsApiUrlForRestBase } from '../constants.js';
+import { normalizeTradingPair } from '../utils/tokenNormalization.js';
+
+/**
+ * Allowed candle bar sizes for `getCandles`. Each maps to the
+ * (intervalnum, intervalstr) tuple the backend expects.
+ */
+const CANDLE_INTERVALS: Record<string, { num: number; str: string }> = {
+    '1m': { num: 1, str: 'minute' },
+    '5m': { num: 5, str: 'minute' },
+    '15m': { num: 15, str: 'minute' },
+    '30m': { num: 30, str: 'minute' },
+    '1h': { num: 1, str: 'hour' },
+    '4h': { num: 4, str: 'hour' },
+    '1d': { num: 1, str: 'day' },
+};
+const CANDLE_LIMIT_MAX = 500;
 import { WebSocketManager } from '../utils/websocketManager.js';
 import { BaseClient } from './base.js';
 import { Result } from '../utils/result.js';
@@ -615,6 +631,131 @@ export class CLOBClient extends BaseClient {
             if (ms > 0) {
                 await new Promise<void>(resolve => setTimeout(resolve, Math.min(ms, 100)));
             }
+        }
+
+        /**
+         * Fetch the most recent OHLCV candles for a CLOB trading pair.
+         *
+         * Wraps `GET /api/trading/candle-chunk` (count-back endpoint). The
+         * backend returns up to `limit` candles ending at the current time,
+         * in chronological order. Cached for 1 second (orderbook tier).
+         */
+        public async getCandles(
+            pair: string,
+            interval: string,
+            limit: number
+        ): Promise<Result<Candle[]>> {
+            const pairResult = validatePairFormat(pair, 'pair');
+            if (!pairResult.success) return Result.fail(pairResult.error!);
+
+            const intervalSpec = CANDLE_INTERVALS[interval];
+            if (!intervalSpec) {
+                const allowed = Object.keys(CANDLE_INTERVALS).join(', ');
+                return Result.fail(`Invalid interval '${interval}'. Allowed: ${allowed}.`);
+            }
+
+            if (!Number.isInteger(limit) || limit < 1 || limit > CANDLE_LIMIT_MAX) {
+                return Result.fail(
+                    `Invalid limit: must be an integer in [1, ${CANDLE_LIMIT_MAX}], got ${limit}.`
+                );
+            }
+
+            const cachedFn = withInstanceCache(
+                this,
+                this._orderbookCache,
+                'getCandles',
+                async (p: string, i: string, l: number): Promise<Result<Candle[]>> => {
+                    const normalizedPair = normalizeTradingPair(p);
+                    const params = {
+                        pair: normalizedPair,
+                        intervalnum: intervalSpec.num,
+                        intervalstr: intervalSpec.str,
+                        count: l,
+                    };
+                    try {
+                        const data = await this._apiCall<any>('get', ENDPOINTS.TRADING_CANDLE_CHUNK, { params });
+                        if (!Array.isArray(data)) {
+                            return Result.fail(
+                                `Unexpected candle response shape: expected list, got ${typeof data}.`
+                            );
+                        }
+                        return Result.ok(data as Candle[]);
+                    } catch (e) {
+                        return Result.fail(this._sanitizeError(e, 'fetching candles'));
+                    }
+                }
+            );
+            return cachedFn(pair, interval, limit);
+        }
+
+        /**
+         * Fetch the global market snapshot for all CLOB pairs.
+         *
+         * Wraps `GET /api/stats/market-snapshot`. Returns the full envelope
+         * (per-pair list with rolling 24h OHLCV, plus exchange-wide totals).
+         * Cached for 1 second (orderbook tier).
+         */
+        public async getMarketSnapshot(): Promise<Result<MarketSnapshot>> {
+            const cachedFn = withInstanceCache(
+                this,
+                this._orderbookCache,
+                'getMarketSnapshot',
+                async (): Promise<Result<MarketSnapshot>> => {
+                    try {
+                        const data = await this._apiCall<any>('get', ENDPOINTS.STATS_MARKET_SNAPSHOT);
+                        // Backend occasionally returns the literal string "" when
+                        // empty; treat that as an empty envelope so callers see
+                        // a stable shape.
+                        if (typeof data === 'string') {
+                            return Result.ok({ market_snapshot: [], totals: {}, last24: {} });
+                        }
+                        if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+                            return Result.fail(
+                                `Unexpected market snapshot shape: expected object, got ${Array.isArray(data) ? 'array' : typeof data}.`
+                            );
+                        }
+                        const envelope: MarketSnapshot = {
+                            market_snapshot: Array.isArray(data.market_snapshot) ? data.market_snapshot : [],
+                            totals: data.totals && typeof data.totals === 'object' ? data.totals : {},
+                            last24: data.last24 && typeof data.last24 === 'object' ? data.last24 : {},
+                        };
+                        return Result.ok(envelope);
+                    } catch (e) {
+                        return Result.fail(this._sanitizeError(e, 'fetching market snapshot'));
+                    }
+                }
+            );
+            return cachedFn();
+        }
+
+        /**
+         * Fetch 24h ticker stats for a single CLOB trading pair.
+         *
+         * Filters the global market snapshot to the requested pair. Reuses
+         * the cached snapshot served by `getMarketSnapshot`, so calling this
+         * for many pairs in close succession costs at most one network call.
+         */
+        public async get24hStats(pair: string): Promise<Result<Candle>> {
+            const pairResult = validatePairFormat(pair, 'pair');
+            if (!pairResult.success) return Result.fail(pairResult.error!);
+
+            const normalizedPair = normalizeTradingPair(pair);
+
+            const snapshotResult = await this.getMarketSnapshot();
+            if (!snapshotResult.success || !snapshotResult.data) {
+                return Result.fail(snapshotResult.error || 'Failed to fetch market snapshot.');
+            }
+
+            // getMarketSnapshot always returns market_snapshot as an array
+            // (the envelope constructor coerces non-arrays to []), so no `|| []`
+            // fallback is needed here.
+            for (const row of snapshotResult.data.market_snapshot) {
+                if (row && typeof row === 'object' && row.pair === normalizedPair) {
+                    return Result.ok(row);
+                }
+            }
+
+            return Result.fail(`Pair ${normalizedPair} not found in market snapshot.`);
         }
 
         /**

@@ -50,6 +50,9 @@ export const ENDPOINTS = {
   RFQ_PAIRS: "/api/rfq/pairs",
   RFQ_FIRM_QUOTE: "/api/rfq/firmQuote",
   RFQ_PAIR_PRICE: "/api/rfq/pairprice",
+  // Public market-data tree (note: /api/ prefix, not /privapi/).
+  TRADING_CANDLE_CHUNK: "/api/trading/candle-chunk",
+  STATS_MARKET_SNAPSHOT: "/api/stats/market-snapshot",
 } as const;
 
 // Default Values

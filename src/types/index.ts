@@ -70,6 +70,33 @@ export interface OrderBookEntry {
     quantity: number;
 }
 
+/**
+ * OHLCV row returned by `getCandles` and embedded in `MarketSnapshot.market_snapshot`.
+ * Numeric fields arrive as strings from the backend so callers can decide whether
+ * to keep precision (`Big`/`string`) or convert to `number`.
+ */
+export interface Candle {
+    pair?: string;
+    date: string;
+    open: string;
+    high: string;
+    low: string;
+    close: string;
+    volume: string;
+    quote_volume: string;
+    change: string;
+}
+
+/**
+ * Envelope returned by `getMarketSnapshot`: per-pair 24h OHLCV rows plus
+ * exchange-wide totals.
+ */
+export interface MarketSnapshot {
+    market_snapshot: Candle[];
+    totals: Record<string, unknown>;
+    last24: Record<string, unknown>;
+}
+
 export interface OrderBook {
     pair: string;
     bids: OrderBookEntry[];
