@@ -24,8 +24,12 @@ export interface Pair {
   quote: string; // address
   base_decimals: number;
   quote_decimals: number;
-  base_display_decimals?: number;
-  quote_display_decimals?: number;
+  // Required: pairs missing display decimals are dropped at ingest with a
+  // logged warning rather than silently defaulted, because the trading
+  // contract enforces these and a wrong default produces a T-TMDQ-01
+  // rejection downstream.
+  base_display_decimals: number;
+  quote_display_decimals: number;
   min_trade_amount: number;
   max_trade_amount: number;
   tradePairId: string; // bytes32 hex

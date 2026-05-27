@@ -1,4 +1,5 @@
 import Big from 'big.js';
+import { Result } from './result.js';
 
 /**
  * Decimal-safe helpers for converting between human-readable amounts and
@@ -65,6 +66,81 @@ export function quantizeToDisplay(value: DecimalInput, displayDecimals: number):
         );
     }
     return toDecimal(value).round(displayDecimals, Big.roundDown);
+}
+
+/**
+ * Tolerance band that absorbs binary-float-representation noise when
+ * validating display-precision. Float arithmetic like `0.1 + 0.2` produces
+ * residuals on the order of `1e-17`; a user typing genuinely extra digits
+ * produces residuals `>= 1e-6`. `1e-10` sits comfortably in the gap.
+ */
+export const DISPLAY_PRECISION_TOLERANCE = new Big('1e-10');
+
+/**
+ * Validate that `value` fits in `displayDecimals` fractional digits.
+ *
+ * Returns `Result.ok(snapped)` when the input is at display precision —
+ * or differs from a representable value only by float noise (within
+ * {@link DISPLAY_PRECISION_TOLERANCE}). Returns `Result.fail` when the
+ * input has genuinely more decimals than the pair allows; callers must
+ * round explicitly rather than have the SDK silently slip the order.
+ *
+ * Silent rounding would be dangerous in a trading SDK — a stop-loss
+ * at `99.99` quietly becoming `99.9` is silent slippage.
+ */
+export function checkDisplayPrecision(
+    value: DecimalInput,
+    displayDecimals: number,
+    paramName: string
+): Result<Big> {
+    if (!Number.isInteger(displayDecimals) || displayDecimals < 0) {
+        throw new Error(
+            `checkDisplayPrecision: displayDecimals must be a non-negative integer, got ${displayDecimals}`
+        );
+    }
+    const d = toDecimal(value);
+    if (d.eq(0)) return Result.ok(d);
+    const nearest = d.round(displayDecimals, Big.roundHalfEven);
+    if (d.minus(nearest).abs().gt(DISPLAY_PRECISION_TOLERANCE)) {
+        return Result.fail(
+            `Invalid ${paramName}: ${String(value)} has more than ${displayDecimals} ` +
+                `decimals; pair allows ${displayDecimals}. Round before passing.`
+        );
+    }
+    return Result.ok(nearest);
+}
+
+/**
+ * Enforce a pair's min/max trade-amount bounds, computed against the
+ * quote-token notional `price * amount`. A bound of `0` is treated as
+ * "no bound" (some pairs legitimately omit a cap). When `price` is
+ * `null` the bounds check is skipped — market orders have no
+ * client-side notional to check.
+ */
+export function checkTradeAmountBounds(
+    price: Big | null,
+    amount: Big,
+    minTradeAmount: DecimalInput,
+    maxTradeAmount: DecimalInput,
+    pairName: string
+): Result<null> {
+    if (price === null) return Result.ok(null);
+    const notional = price.times(amount);
+    const minAmt = toDecimal(minTradeAmount);
+    const maxAmt = toDecimal(maxTradeAmount);
+    if (minAmt.gt(0) && notional.lt(minAmt)) {
+        return Result.fail(
+            `Trade notional ${notional.toString()} below min_trade_amount ` +
+                `${minAmt.toString()} (quote-token) for pair ${pairName}.`
+        );
+    }
+    if (maxAmt.gt(0) && notional.gt(maxAmt)) {
+        return Result.fail(
+            `Trade notional ${notional.toString()} above max_trade_amount ` +
+                `${maxAmt.toString()} (quote-token) for pair ${pairName}.`
+        );
+    }
+    return Result.ok(null);
 }
 
 export { Big };

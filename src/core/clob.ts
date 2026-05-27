@@ -7,6 +7,12 @@ import { BaseClient } from './base.js';
 import { Result } from '../utils/result.js';
 import { withInstanceCache } from '../utils/cache.js';
 import {
+    Big,
+    toWei,
+    checkDisplayPrecision,
+    checkTradeAmountBounds,
+} from '../utils/decimal.js';
+import {
     validatePairFormat,
     validateOrderParams,
     validateOrderIdFormat,
@@ -247,14 +253,30 @@ export class CLOBClient extends BaseClient {
 
                             if (isSubnetEnv) {
                                 const pairName = item.pair;
+                                // Display decimals are contractual: the trading contract
+                                // enforces them and a wrong client-side default produces
+                                // a T-TMDQ-01 rejection. If the API omits them, drop the
+                                // pair with a warning rather than silently substitute 18.
+                                // Note: 0 is a valid value — use null/undefined check.
+                                if (item.base_display_decimals == null || item.quote_display_decimals == null) {
+                                    this._logger.warn(
+                                        `Pair ${pairName} dropped at ingest: missing display decimals`,
+                                        {
+                                            pair: pairName,
+                                            base_display_decimals: item.base_display_decimals,
+                                            quote_display_decimals: item.quote_display_decimals,
+                                        }
+                                    );
+                                    continue;
+                                }
                                 const pairData: Pair = {
                                     pair: pairName,
                                     base: item.base,
                                     quote: item.quote,
                                     base_decimals: item.base_decimals,
                                     quote_decimals: item.quote_decimals,
-                                    base_display_decimals: item.base_display_decimals || 18,
-                                    quote_display_decimals: item.quote_display_decimals || 18,
+                                    base_display_decimals: item.base_display_decimals,
+                                    quote_display_decimals: item.quote_display_decimals,
                                     min_trade_amount: parseFloat(String(item.min_trade_amount || 0)),
                                     max_trade_amount: parseFloat(String(item.max_trade_amount || 0)),
                                     tradePairId: Utils.toBytes32(pairName),
@@ -274,6 +296,61 @@ export class CLOBClient extends BaseClient {
 
         public _ensurePairExists(pair: string): boolean {
             return !!this.pairs[pair];
+        }
+
+        /**
+         * Validate and quantize an order's price/amount against the pair's
+         * display decimals and min/max trade-amount bounds.
+         *
+         * Inputs whose precision exceeds the pair's display decimals are
+         * rejected — the SDK does not silently round, because that would
+         * silently slip orders (e.g. a stop at 99.99 quietly becoming 99.9).
+         * Float-representation noise (residual <= 1e-10) is tolerated and
+         * snapped to the nearest displayable value.
+         *
+         * After the display-precision check, the resulting notional
+         * (`price * amount`) is checked against the pair's bounds (quote-
+         * token denominated) so the SDK fails fast instead of waiting for
+         * the contract to reject.
+         *
+         * @param price Order price (null or 0 skips the price-side checks)
+         * @param amount Order amount (always validated)
+         * @param pairData Resolved pair metadata
+         */
+        protected _normalizeOrderAmounts(
+            price: number | string | Big | null | undefined,
+            amount: number | string | Big,
+            pairData: Pair
+        ): Result<{ price: Big | null; amount: Big }> {
+            let normalizedPrice: Big | null = null;
+            if (price !== null && price !== undefined && price !== 0 && price !== '0' && price !== '') {
+                const priceRes = checkDisplayPrecision(
+                    price,
+                    pairData.quote_display_decimals,
+                    'price'
+                );
+                if (!priceRes.success) return Result.fail(priceRes.error!);
+                normalizedPrice = priceRes.data!;
+            }
+
+            const amountRes = checkDisplayPrecision(
+                amount,
+                pairData.base_display_decimals,
+                'amount'
+            );
+            if (!amountRes.success) return Result.fail(amountRes.error!);
+            const normalizedAmount = amountRes.data!;
+
+            const boundsRes = checkTradeAmountBounds(
+                normalizedPrice,
+                normalizedAmount,
+                pairData.min_trade_amount,
+                pairData.max_trade_amount,
+                pairData.pair
+            );
+            if (!boundsRes.success) return Result.fail(boundsRes.error!);
+
+            return Result.ok({ price: normalizedPrice, amount: normalizedAmount });
         }
 
         /** Fetch CLOB pairs if needed, then verify the pair exists. */
@@ -578,20 +655,16 @@ export class CLOBClient extends BaseClient {
             }
 
             try {
-                // Round to display decimals to avoid underflow errors
-                let price = req.price || 0;
-                let amount = req.amount;
-                if (pairData.quote_display_decimals !== undefined && price) {
-                    price = parseFloat(price.toFixed(pairData.quote_display_decimals));
+                const norm = this._normalizeOrderAmounts(req.price, req.amount, pairData);
+                if (!norm.success) {
+                    return Result.fail(norm.error!);
                 }
-                if (pairData.base_display_decimals !== undefined) {
-                    amount = parseFloat(amount.toFixed(pairData.base_display_decimals));
-                }
+                const { price: normPrice, amount: normAmount } = norm.data!;
 
-                const priceWei = Utils.unitConversion(price, pairData.quote_decimals, true);
-                const qtyWei = Utils.unitConversion(amount, pairData.base_decimals, true);
-                
-                const clientOrderId = Utils.toBytes32(Math.random().toString(36).substring(7)); 
+                const priceWei = normPrice ? toWei(normPrice, pairData.quote_decimals) : 0n;
+                const qtyWei = toWei(normAmount, pairData.base_decimals);
+
+                const clientOrderId = Utils.toBytes32(Math.random().toString(36).substring(7));
                 
                 const sideEnum = req.side === 'BUY' ? 0 : 1;
                 const typeEnum = req.type === 'MARKET' ? 0 : 1;
@@ -1107,19 +1180,16 @@ export class CLOBClient extends BaseClient {
                     
                     const pairData = this.pairs[pair];
                     const sideEnum = (order.side.toUpperCase() === 'BUY') ? 0 : 1;
-                    
-                    let price = order.price || 0;
-                    let amount = order.amount;
-                    if (pairData.quote_display_decimals !== undefined && price) {
-                        price = parseFloat(price.toFixed(pairData.quote_display_decimals));
+
+                    const norm = this._normalizeOrderAmounts(order.price, order.amount, pairData);
+                    if (!norm.success) {
+                        return Result.fail(norm.error!);
                     }
-                    if (pairData.base_display_decimals !== undefined) {
-                        amount = parseFloat(amount.toFixed(pairData.base_display_decimals));
-                    }
-                    
-                    const priceWei = BigInt(Utils.unitConversion(price, pairData.quote_decimals, true));
-                    const qtyWei = BigInt(Utils.unitConversion(amount, pairData.base_decimals, true));
-                    
+                    const { price: normPrice, amount: normAmount } = norm.data!;
+
+                    const priceWei = normPrice ? toWei(normPrice, pairData.quote_decimals) : 0n;
+                    const qtyWei = toWei(normAmount, pairData.base_decimals);
+
                     const clientOrderId = ethers.hexlify(ethers.randomBytes(32));
                     clientOrderIds.push(clientOrderId);
 
@@ -1210,17 +1280,16 @@ export class CLOBClient extends BaseClient {
                     return Result.fail('Pair data not found for order');
                 }
 
-                let price = newPrice;
-                let amount = newAmount;
-                if (pairData.quote_display_decimals !== undefined) {
-                    price = parseFloat(price.toFixed(pairData.quote_display_decimals));
+                const norm = this._normalizeOrderAmounts(newPrice, newAmount, pairData);
+                if (!norm.success) {
+                    return Result.fail(norm.error!);
                 }
-                if (pairData.base_display_decimals !== undefined) {
-                    amount = parseFloat(amount.toFixed(pairData.base_display_decimals));
-                }
+                const { price: normPrice, amount: normAmount } = norm.data!;
 
-                const priceWei = BigInt(Utils.unitConversion(price, pairData.quote_decimals, true));
-                const qtyWei = BigInt(Utils.unitConversion(amount, pairData.base_decimals, true));
+                // newPrice is gated through validatePositiveNumber above, so the
+                // normalized price is non-null here.
+                const priceWei = toWei(normPrice!, pairData.quote_decimals);
+                const qtyWei = toWei(normAmount, pairData.base_decimals);
                 const newClientOrderId = ethers.hexlify(ethers.randomBytes(32));
                 const orderIdBytes = this._slotToBytes32Hex(order.internalOrderId);
                 const cancelledInternalOrderId = this._slotToBytes32Hex(order.internalOrderId);
@@ -1366,17 +1435,14 @@ export class CLOBClient extends BaseClient {
                         sideEnum = (side.toUpperCase() === 'BUY') ? 0 : 1;
                     }
                     
-                    let price = rep.price;
-                    let amount = rep.amount;
-                    if (pairData.quote_display_decimals !== undefined && price) {
-                        price = parseFloat(price.toFixed(pairData.quote_display_decimals));
+                    const norm = this._normalizeOrderAmounts(rep.price, rep.amount, pairData);
+                    if (!norm.success) {
+                        return Result.fail(norm.error!);
                     }
-                    if (pairData.base_display_decimals !== undefined) {
-                        amount = parseFloat(amount.toFixed(pairData.base_display_decimals));
-                    }
-                    
-                    const priceWei = BigInt(Utils.unitConversion(price, pairData.quote_decimals, true));
-                    const qtyWei = BigInt(Utils.unitConversion(amount, pairData.base_decimals, true));
+                    const { price: normPrice, amount: normAmount } = norm.data!;
+
+                    const priceWei = normPrice ? toWei(normPrice, pairData.quote_decimals) : 0n;
+                    const qtyWei = toWei(normAmount, pairData.base_decimals);
                     const newClientOrderId = ethers.hexlify(ethers.randomBytes(32));
                     newClientOrderIds.push(newClientOrderId);
 
