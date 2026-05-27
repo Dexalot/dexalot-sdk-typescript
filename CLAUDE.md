@@ -549,32 +549,50 @@ All paths relative to `src/`.
 | ABIs | `abis/abi_{TradePairs,Portfolio,MainnetRFQ}.json` |
 | Main entrypoint | `index.ts` |
 | Internal entrypoint | `internal.ts` |
+| Decimal helpers | `utils/decimal.ts` (`toWei`, `fromWei`, `Big`, precision gates) |
 | Version | `version.ts` (synced by `scripts/version_manager.mjs`) |
+| Examples | `examples/*.ts` — runnable via `pnpm exec tsx examples/<name>.ts`; type-checked in CI via `tsconfig.examples.json` |
+| Docs | `docs/*.md` — user guide, API reference, architecture, error handling, caching, websocket, simple-swap, REST API |
 
 ---
 
 ## Gaps and TODOs
 
-Known gaps where this repo trails the Python SDK. None are urgent;
-all tracked informally.
+The parity port from `dexalot-sdk-python` v0.5.15 is complete as of
+this commit. All ten parity PRs have landed (security hardening,
+decimal foundation, CLOB precision, transfer precision, market-data
+helpers, swap functional fixes, cache hygiene, perf round-up, CI /
+release gates, docs and examples). What remains is incremental:
 
-- No remediation-plan doc tracking open security/perf items. Most
-  Python remediation fixes landed in the TS SDK's initial release by
-  design, but the lineage is not documented anywhere in-repo.
-- `docs/` directory exists but is empty. Python SDK ships a full
-  Zensical docs site (architecture, user guide, error handling,
-  websocket, caching, simple-swap, rest-api, reference, remediation
-  plan). Decide: mirror in TS, or keep the authoritative site on the
-  Python side and point TS users there.
-- No ESLint / Prettier config. Rely on `tsc --strict` and editor
-  formatting for now.
-- No cache stampede protection (Python has `async_ttl_cached`
-  Future-coalescing).
-- No `apiBaseUrl` cache-key namespacing (Python has it). Don't run
-  multi-env clients in the same process without disabling caching.
-- Rate limiter is FIFO-serialized, not a parallel token bucket
-  (documented above). Consider porting Python's token bucket if
-  concurrency becomes a real constraint.
-- Provider failover has no lock-free fast path (Python's
-  `ProviderManager` has one). Not a concern at current provider
-  counts.
+- **ESLint / Prettier config** — the Python SDK has `ruff` for
+  lint+format; we rely on `tsc --strict` and editor formatting.
+  Adding ESLint with a permissive baseline (e.g. `@typescript-eslint/
+  recommended` + `prettier`) is a candidate follow-up that would
+  churn existing files; doing it as a focused PR with the relevant
+  config + autofix is the cleanest path.
+- **SAST step in CI** — `pnpm audit` and OSV are wired up for CVE
+  coverage; a SAST sweep (`eslint-plugin-security` or `semgrep ci`)
+  would catch class-of-error issues earlier.
+- **Browser bundle** — the `internal` subpath is browser-safe by
+  construction (no `node:*` imports outside `/secrets-vault`), but
+  no published artifact is bundled for the browser yet. A separate
+  `@dexalot/dexalot-sdk-browser` build would be additive.
+
+Items that previously trailed the Python SDK and are now at parity
+(no longer gaps):
+
+- Module-level cache singletons with stampede protection and
+  `apiBaseUrl` key namespacing (PR 7).
+- Rate limiter with independent concurrent sleeps (PR 8).
+- ProviderManager lock-free reads — verified (PR 8).
+- AsyncNonceManager FIFO Promise-chain queue per `(chainId, address)`
+  (PR 8).
+- Decimal-safe `_formatOrderData` via `fromWei` (PR 8).
+- `getCandles`, `getMarketSnapshot`, `get24hStats`,
+  `getChainTokenBalances` (PR 5).
+- Functional RFQ execution — envelope unwrap, `msg.value` for native
+  sells, revert-reason surfacing (PR 6).
+- CI workflow with 100% coverage gate, `pnpm audit`, OSV scan; release
+  workflow with pre-publish audit + provenance + ancestor-of-main
+  check (PR 9).
+- Full docs and runnable examples ports (this PR).
