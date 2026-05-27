@@ -125,7 +125,7 @@ Top-level client. Composes CLOB, Swap, and Transfer functionality on top of `Bas
 
 **Writes (CLOB):** `addOrder(req)`, `addLimitOrderList(orders)`, `cancelOrder(id)`, `cancelOrderByClientId(id)`, `cancelListOrdersByClientId(ids)`, `replaceOrder(id, newPrice, newAmount)`, `cancelAddList(replacements)`.
 
-**Writes (Transfer / Swap):** `deposit(token, amount, sourceChain, useLayerZero?)`, `withdraw(token, amount, destChain, useLayerZero?)`, `transferPortfolio(token, amount, toAddress)`, `transferToken(token, amount, toAddress)`, `addGas(amount)`, `removeGas(amount)`, `getSwapQuote(...)`, `getSwapFirmQuote(...)`, `getSwapSoftQuote(...)`, `executeRFQSwap(quote, waitForReceipt?)`.
+**Writes (Transfer / Swap):** `deposit(token, amount, sourceChain, useLayerZero?)`, `withdraw(token, amount, destChain, useLayerZero?)`, `transferPortfolio(token, amount, toAddress)`, `transferToken(token, amount, toAddress)`, `addGas(amount)`, `removeGas(amount)`, `getSwapFirmQuote(...)`, `getSwapSoftQuote(...)`, `executeRFQSwap(quote, waitForReceipt?)`.
 
 **WebSocket:** `subscribeToEvents(topic, callback, isPrivate)`, `unsubscribeFromEvents(topic)`, `closeWebsocket(graceS?)`.
 

@@ -283,7 +283,7 @@ describe('SwapClient', () => {
         });
     });
 
-    describe('getSwapQuote', () => {
+    describe('_getSwapQuoteBase (exercised via getSwapFirmQuote / getSwapSoftQuote)', () => {
         beforeEach(() => {
             client.rfqPairs[43114] = MOCK_PAIRS;
         });
@@ -292,7 +292,7 @@ describe('SwapClient', () => {
             client.rfqPairs[43114] = { 'AVAX/USDT': {} };
             mockAxios.request.mockResolvedValue({ data: { price: 100 } });
 
-            const result = await client.getSwapQuote('USDT', 'AVAX', 10);
+            const result = await client.getSwapSoftQuote('USDT', 'AVAX', 10);
             expect(result.success).toBe(true);
             expect(mockAxios.request).toHaveBeenCalledWith(
                 expect.objectContaining({ method: 'get', url: ENDPOINTS.RFQ_PAIR_PRICE })
@@ -304,7 +304,7 @@ describe('SwapClient', () => {
             mockAxios.request.mockResolvedValue({
                 data: { success: false, reason: 'Quote backend offline' },
             });
-            const result = await client.getSwapQuote('AVAX', 'USDT', 10, true);
+            const result = await client.getSwapFirmQuote('AVAX', 'USDT', 10);
             expect(result.success).toBe(false);
             expect(result.error).toContain('Cannot execute failed quote');
             expect(result.error).toContain('Quote backend offline');
@@ -313,7 +313,7 @@ describe('SwapClient', () => {
         it('falls back to a generic reason when {success: false} carries no reason', async () => {
             client.rfqPairs[43114] = { 'AVAX/USDT': {} };
             mockAxios.request.mockResolvedValue({ data: { success: false } });
-            const result = await client.getSwapQuote('AVAX', 'USDT', 10, true);
+            const result = await client.getSwapFirmQuote('AVAX', 'USDT', 10);
             expect(result.success).toBe(false);
             expect(result.error).toContain('Quote API returned success=false');
         });
@@ -323,7 +323,7 @@ describe('SwapClient', () => {
             mockAxios.request.mockResolvedValue({
                 data: { success: false, error: 'rate-limited' },
             });
-            const result = await client.getSwapQuote('AVAX', 'USDT', 10, true);
+            const result = await client.getSwapFirmQuote('AVAX', 'USDT', 10);
             expect(result.success).toBe(false);
             expect(result.error).toContain('rate-limited');
         });
@@ -340,7 +340,7 @@ describe('SwapClient', () => {
                     },
                 },
             });
-            const result = await client.getSwapQuote('AVAX', 'USDT', 10, true);
+            const result = await client.getSwapFirmQuote('AVAX', 'USDT', 10);
             expect(result.success).toBe(true);
             expect(result.data!.chainId).toBe(43114);
             expect(result.data!.signature).toBe('0xSig');
@@ -350,27 +350,27 @@ describe('SwapClient', () => {
 
         it('returns error if signer missing for firm quote', async () => {
             client.signer = undefined as any;
-            const result = await client.getSwapQuote('AVAX', 'USDT', 1, true);
+            const result = await client.getSwapFirmQuote('AVAX', 'USDT', 1);
             expect(result.success).toBe(false);
             expect(result.error).toContain('Signer required');
         });
 
         it('returns error if pair not found', async () => {
             client.rfqPairs[43114] = {};
-            const result = await client.getSwapQuote('A', 'B', 1);
+            const result = await client.getSwapSoftQuote('A', 'B', 1);
             expect(result.success).toBe(false);
             expect(result.error).toContain('Pair A/B not found');
         });
 
         it('validates input parameters', async () => {
-            const result = await client.getSwapQuote('', 'B', 1);
+            const result = await client.getSwapSoftQuote('', 'B', 1);
             expect(result.success).toBe(false);
         });
 
         it('reports a sanitized error on backend exception', async () => {
             client.rfqPairs[43114] = { 'AVAX/USDT': {} };
             mockAxios.request.mockRejectedValue(new Error('API error'));
-            const result = await client.getSwapQuote('AVAX', 'USDT', 10);
+            const result = await client.getSwapSoftQuote('AVAX', 'USDT', 10);
             expect(result.success).toBe(false);
             expect(result.error).toContain('fetching swap quote');
         });

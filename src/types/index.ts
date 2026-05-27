@@ -139,7 +139,7 @@ export interface TokenBalance {
  * that envelope so callers always see the inner shape with `signature`
  * and `order` at the top level (matching the contract's call surface).
  * Envelope-layer failures (`{"success": false, "reason": "..."}`) are
- * surfaced as `Result.fail` from `getSwapQuote` and never reach this type.
+ * surfaced as `Result.fail` from the swap-quote helpers and never reach this type.
  */
 export interface SwapQuote {
     pair: string;

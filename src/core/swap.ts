@@ -63,7 +63,7 @@ export class SwapClient extends CLOBClient {
          *
          * Original keys are preserved; nothing is popped or renamed.
          * Envelope-layer failures (`{"success": false, "reason": ...}`)
-         * are caught at the fetch site in `getSwapQuote` BEFORE the
+         * are caught at the fetch site in `_getSwapQuoteBase` BEFORE the
          * transform runs, so this method never sees them.
          */
         private _transformQuoteFromAPI(quote: any): SwapQuote {
@@ -169,13 +169,16 @@ export class SwapClient extends CLOBClient {
         }
 
         /**
-         * Get a swap quote (firm or indicative).
+         * Shared implementation for firm and soft quotes. Public callers use
+         * `getSwapFirmQuote` / `getSwapSoftQuote`; this helper centralizes
+         * pair resolution, parameter packing, envelope unwrap, and error
+         * sanitization so the two public surfaces stay aligned.
          */
-        public async getSwapQuote(
+        private async _getSwapQuoteBase(
             fromToken: string,
             toToken: string,
             amount: number,
-            firm: boolean = false,
+            firm: boolean,
             chainId?: number
         ): Promise<Result<SwapQuote>> {
             const validationResult = validateSwapParams(fromToken, toToken, amount);
@@ -240,7 +243,7 @@ export class SwapClient extends CLOBClient {
             amount: number,
             chainId?: number
         ): Promise<Result<SwapQuote>> {
-            return this.getSwapQuote(fromToken, toToken, amount, true, chainId);
+            return this._getSwapQuoteBase(fromToken, toToken, amount, true, chainId);
         }
 
         /**
@@ -252,7 +255,7 @@ export class SwapClient extends CLOBClient {
             amount: number,
             chainId?: number
         ): Promise<Result<SwapQuote>> {
-            return this.getSwapQuote(fromToken, toToken, amount, false, chainId);
+            return this._getSwapQuoteBase(fromToken, toToken, amount, false, chainId);
         }
 
         public async _resolvePair(from: string, to: string, chainId: number) {
