@@ -7,6 +7,12 @@ import DexalotClientDefault, {
     MemoryCache,
     Result,
     version,
+    configureLogging,
+    withRequestId,
+    setRequestId,
+    getRequestId,
+    getLogLevel,
+    getLogFormat,
 } from '../../src/index';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -92,5 +98,27 @@ describe('package entrypoints', () => {
         expect(typeof wei).toBe('string');
         DexalotClient.configureLogging('error', 'console');
         expect(DexalotClient.getVersion()).toBe(version);
+    });
+
+    it('observability re-exports are wired through to the implementation', () => {
+        // configureLogging delegates to the observability module — calling
+        // it from the public surface must update the live logger state.
+        configureLogging('debug', 'json');
+        expect(getLogLevel()).toBe('debug');
+        expect(getLogFormat()).toBe('json');
+        configureLogging('error', 'console');
+        expect(getLogLevel()).toBe('error');
+        expect(getLogFormat()).toBe('console');
+
+        // setRequestId / getRequestId tie into the AsyncLocalStorage-backed
+        // store. withRequestId scopes a value for the duration of a
+        // (sync or async) callback.
+        setRequestId('outer');
+        expect(getRequestId()).toBe('outer');
+        const inner = withRequestId('inner', () => getRequestId());
+        expect(inner).toBe('inner');
+        // After the scope, outer is restored.
+        expect(getRequestId()).toBe('outer');
+        setRequestId(null);
     });
 });
