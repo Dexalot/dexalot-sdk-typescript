@@ -94,6 +94,53 @@ describe('AsyncRateLimiter', () => {
             await Promise.all(promises);
             expect(order).toEqual([1, 2, 3]);
         });
+
+        it('reserves each caller a distinct slot synchronously (independent sleeps)', async () => {
+            // 5 concurrent callers at 5 rps: the cursor advances 4 times
+            // synchronously when they queue up, so callers 1..4 see waitTimes
+            // of 0, 200, 400, 600 ms respectively — and all four sleeps run
+            // in parallel. Total wall-clock is 600 ms, not 4 * 200 = 800.
+            const limiter = new AsyncRateLimiter(5);
+            const completionTimes: number[] = [];
+
+            const start = Date.now();
+            const promises = Array.from({ length: 5 }, () =>
+                limiter.acquire().then(() => {
+                    completionTimes.push(Date.now() - start);
+                })
+            );
+
+            // Push the clock forward in one big step; all five sleeps complete.
+            await jest.advanceTimersByTimeAsync(1000);
+            await Promise.all(promises);
+
+            // Completions should be 0, 200, 400, 600, 800 — strictly
+            // increasing, spaced by minInterval.
+            expect(completionTimes).toHaveLength(5);
+            expect(completionTimes[0]).toBe(0);
+            for (let i = 1; i < 5; i++) {
+                expect(completionTimes[i] - completionTimes[i - 1]).toBe(200);
+            }
+        });
+
+        it('does not catch up after a quiet period (no burst)', async () => {
+            const limiter = new AsyncRateLimiter(5); // 200ms interval
+            await limiter.acquire();
+            // Quiet period — the cursor would otherwise creep behind `now`.
+            await jest.advanceTimersByTimeAsync(10_000);
+
+            // Two rapid calls after the quiet period: the first is immediate,
+            // the second waits a full interval (not zero).
+            const firstStart = Date.now();
+            await limiter.acquire();
+            expect(Date.now() - firstStart).toBeLessThan(10);
+
+            const secondStart = Date.now();
+            const p = limiter.acquire();
+            await jest.advanceTimersByTimeAsync(200);
+            await p;
+            expect(Date.now() - secondStart).toBe(200);
+        });
     });
 
     describe('reset()', () => {

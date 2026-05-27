@@ -1082,34 +1082,56 @@ export class TransferClient extends SwapClient {
             const queryAddress = addrRes.data!;
 
             try {
+                // Pages are fetched in parallel batches: each batch of
+                // BATCH_SIZE pages is issued via Promise.all, then we
+                // check for an empty page (the end-of-data signal). If
+                // the backend has more data we advance and issue the
+                // next batch. PAGE_HARD_CAP bounds the worst case.
+                const BATCH_SIZE = 5;
+                const PAGE_HARD_CAP = 50;
+
                 const balances = await this.withRpcFailover(this._dexalotL1DisplayName(), async (p) => {
                     const c = this._contractReadOnly(p, subDep.address, subDep.abi);
                     const out: Record<string, TokenBalance> = {};
-                    let page = 0;
-                    
-                    while (true) {
-                        const data = await c.getBalances(queryAddress, page);
-                        const symbolsBytes = data[0];
-                        const totals = data[1];
-                        const availables = data[2];
-                        
-                        if (symbolsBytes.length === 0) break;
 
-                        for (let i = 0; i < symbolsBytes.length; i++) {
-                            const symbol = Utils.fromBytes32(symbolsBytes[i]);
-                            const dec = this._resolveTokenDecimals(symbol);
-                         
-                            const total = parseFloat(Utils.unitConversion(totals[i].toString(), dec, false));
-                            const available = parseFloat(Utils.unitConversion(availables[i].toString(), dec, false));
-                         
-                            out[symbol] = {
-                                total,
-                                available,
-                                locked: total - available
-                            };
+                    let batchStart = 0;
+                    while (batchStart < PAGE_HARD_CAP) {
+                        const batchEnd = Math.min(batchStart + BATCH_SIZE, PAGE_HARD_CAP);
+                        const pageNumbers: number[] = [];
+                        for (let pg = batchStart; pg < batchEnd; pg++) pageNumbers.push(pg);
+
+                        const results = await Promise.all(
+                            pageNumbers.map((pg) => c.getBalances(queryAddress, pg))
+                        );
+
+                        let sawEmpty = false;
+                        for (const data of results) {
+                            const symbolsBytes = data[0];
+                            if (!symbolsBytes || symbolsBytes.length === 0) {
+                                sawEmpty = true;
+                                break;
+                            }
+                            const totals = data[1];
+                            const availables = data[2];
+                            for (let i = 0; i < symbolsBytes.length; i++) {
+                                const symbol = Utils.fromBytes32(symbolsBytes[i]);
+                                const dec = this._resolveTokenDecimals(symbol);
+                                const total = parseFloat(
+                                    Utils.unitConversion(totals[i].toString(), dec, false)
+                                );
+                                const available = parseFloat(
+                                    Utils.unitConversion(availables[i].toString(), dec, false)
+                                );
+                                out[symbol] = {
+                                    total,
+                                    available,
+                                    locked: total - available,
+                                };
+                            }
                         }
-                        page++;
-                        if (page > 10) break;
+
+                        if (sawEmpty) break;
+                        batchStart += BATCH_SIZE;
                     }
                     return out;
                 });

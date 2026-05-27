@@ -8,6 +8,7 @@ export * from './inputValidators.js';
 export {
     toDecimal,
     toWei,
+    fromWei,
     quantizeToDisplay,
     checkDisplayPrecision,
     checkTradeAmountBounds,
