@@ -263,6 +263,24 @@ describe('TransferClient', () => {
              expect(result.success).toBe(false);
              expect(result.error).toBeDefined();
         });
+
+        it('encodes native deposit amount through toWei (precision-safe)', async () => {
+             const result = await client.deposit('AVAX', 2933.0, 'Avalanche');
+             expect(result.success).toBe(true);
+             const callArgs = mockContract.depositNative.mock.calls[0];
+             // depositNative(signerAddress, bridgeId, { value: amountWei + bridgeFee, ... })
+             // bridgeFee is mocked to 1000n; assert value = 2933e18 + 1000.
+             expect(callArgs[2].value).toBe(2933000000000000000000n + 1000n);
+        });
+
+        it('encodes ERC20 deposit amount through toWei (precision-safe)', async () => {
+             const result = await client.deposit('USDT', 2933.0, 'Avalanche');
+             expect(result.success).toBe(true);
+             const callArgs = mockContract.depositToken.mock.calls[0];
+             // depositToken(signerAddress, symbolBytes, amountWei, bridgeId, opts)
+             // USDT in this fixture has 6 decimals.
+             expect(callArgs[2]).toBe(2933000000n);
+        });
     });
 
     describe('withdraw', () => {
@@ -305,6 +323,53 @@ describe('TransferClient', () => {
              const result = await client.withdraw('AVAX', 10, 'Destination');
              expect(result.success).toBe(false);
              expect(result.error).toBeDefined();
+        });
+
+        it('encodes withdraw amount through toWei (precision-safe)', async () => {
+             const result = await client.withdraw('AVAX', 2933.0, 'Destination');
+             expect(result.success).toBe(true);
+             const callArgs = mockContract.withdrawToken.mock.calls[0];
+             // withdrawToken(signerAddress, symbolBytes, amountWei, ...)
+             expect(callArgs[2]).toBe(2933000000000000000000n);
+        });
+    });
+
+    describe('transferPortfolio precision', () => {
+        const validAddress = '0x1234567890123456789012345678901234567890';
+
+        it('encodes transferPortfolio amount through toWei (precision-safe)', async () => {
+             jest.spyOn(client, 'getPortfolioBalance').mockResolvedValue({
+                 success: true,
+                 data: { total: 10000, available: 10000, locked: 0 },
+             } as any);
+
+             const result = await client.transferPortfolio('AVAX', 2933.0, validAddress);
+             expect(result.success).toBe(true);
+             const callArgs = mockContract.transferToken.mock.calls[0];
+             // transferToken(toAddress, symbolBytes, amountWei)
+             expect(callArgs[2]).toBe(2933000000000000000000n);
+        });
+    });
+
+    describe('getDepositBridgeFee precision', () => {
+        it('encodes the amount argument through toWei (precision-safe)', async () => {
+             const bridgeContract = {
+                 getBridgeFee: jest.fn().mockResolvedValue(1234n),
+             };
+             // Override the Contract constructor used inside getDepositBridgeFee for
+             // the bridge contract. The default mock returns the AVAX/USDT contract.
+             (Contract as unknown as jest.Mock).mockImplementation((_addr, abi) => {
+                 if (Array.isArray(abi) && abi.some((item: any) => String(item).includes('getBridgeFee'))) {
+                     return bridgeContract;
+                 }
+                 return mockContract;
+             });
+
+             const result = await client.getDepositBridgeFee('AVAX', 2933.0, 'Avalanche');
+             expect(result.success).toBe(true);
+             const fnCallArgs = bridgeContract.getBridgeFee.mock.calls[0];
+             // getBridgeFee(bridgeId, dstChainId, symbolBytes, amountWei, address, '0x00')
+             expect(fnCallArgs[3]).toBe(2933000000000000000000n);
         });
     });
 
@@ -411,6 +476,22 @@ describe('TransferClient', () => {
              const result = await client.removeGas(10);
              expect(result.success).toBe(false);
              expect(result.error).toBeDefined();
+        });
+
+        it('encodes addGas amount through toWei (precision-safe, no float drift)', async () => {
+             // The naive `BigInt(Math.floor(2933.0 * 10**18))` yields
+             // 2932999999999999737856n. toWei must produce the exact value.
+             const result = await client.addGas(2933.0);
+             expect(result.success).toBe(true);
+             const callArgs = mockContract.withdrawNative.mock.calls[0];
+             expect(callArgs[1]).toBe(2933000000000000000000n);
+        });
+
+        it('encodes removeGas amount through toWei (precision-safe, no float drift)', async () => {
+             const result = await client.removeGas(2933.0);
+             expect(result.success).toBe(true);
+             const callArgs = mockContract.depositNative.mock.calls[0];
+             expect(callArgs[2].value).toBe(2933000000000000000000n);
         });
     });
 

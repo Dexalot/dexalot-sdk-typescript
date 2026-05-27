@@ -2,6 +2,7 @@ import { ethers, Contract, TransactionResponse, MaxUint256, Provider } from 'eth
 import { TokenBalance, TokenInfo } from '../types/index.js';
 import { ACCESS_ID, ICM_CHAINS, DEFAULTS, ENDPOINTS } from '../constants.js';
 import { Utils } from '../utils/index.js';
+import { toWei } from '../utils/decimal.js';
 import { SwapClient } from './swap.js';
 import { Result } from '../utils/result.js';
 import { withInstanceCache } from '../utils/cache.js';
@@ -224,7 +225,7 @@ export class TransferClient extends SwapClient {
                             mainDep.address,
                             mainDep.abi
                         );
-                        const amountWei = BigInt(Utils.unitConversion(amount, dec, true));
+                        const amountWei = toWei(amount, dec);
                         const symbolBytes = Utils.toBytes32(normalized);
                         const bridgeId = this._getBridgeId(canonicalSourceChain, false);
                         return this._getBridgeFee(contract, bridgeId, symbolBytes, amountWei);
@@ -280,7 +281,7 @@ export class TransferClient extends SwapClient {
                     const chainId = chainConfig.chain_id;
 
                     const dec = this._getTokenDecimals(token, chainId) || 18;
-                    const amountWei = BigInt(Utils.unitConversion(amount, dec, true));
+                    const amountWei = toWei(amount, dec);
                     const symbolBytes = Utils.toBytes32(token);
                     const bridgeId = this._getBridgeId(sourceChain, useLayerZero);
 
@@ -401,7 +402,7 @@ export class TransferClient extends SwapClient {
                     const contract = this._contractForSigner(provider, subDep.address, subDep.abi);
                     const destChainId = chainConfig.chain_id;
                     const decimals = this._getTokenDecimals(token, destChainId) ?? 18;
-                    const amountWei = BigInt(Utils.unitConversion(amount, decimals, true));
+                    const amountWei = toWei(amount, decimals);
                     const bridgeId = this._getBridgeId(destinationChain, useLayerZero);
                     const symbolBytes = Utils.toBytes32(token);
                     const signerAddress = await this.signer!.getAddress();
@@ -508,7 +509,7 @@ export class TransferClient extends SwapClient {
                 }
 
                 const dec = this._getTokenDecimals(token, this.subnetChainId || 0) ?? 18;
-                const amountWei = BigInt(Utils.unitConversion(amount, dec, true));
+                const amountWei = toWei(amount, dec);
                 const symbolBytes = Utils.toBytes32(token);
 
                 return await this.withRpcFailover(this._dexalotL1DisplayName(), async (provider) => {
@@ -561,7 +562,7 @@ export class TransferClient extends SwapClient {
             }
 
             try {
-                const amountWei = BigInt(Utils.unitConversion(amount, 18, true));
+                const amountWei = toWei(amount, 18);
                 const signerAddress = await this.signer.getAddress();
                 return await this.withRpcFailover(this._dexalotL1DisplayName(), async (provider) => {
                     const contract = this._contractForSigner(provider, subDep.address, subDep.abi);
@@ -597,7 +598,7 @@ export class TransferClient extends SwapClient {
             }
 
             try {
-                const amountWei = BigInt(Utils.unitConversion(amount, 18, true));
+                const amountWei = toWei(amount, 18);
                 const signerAddress = await this.signer.getAddress();
                 return await this.withRpcFailover(this._dexalotL1DisplayName(), async (provider) => {
                     const contract = this._contractForSigner(provider, subDep.address, subDep.abi);
