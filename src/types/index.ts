@@ -113,6 +113,86 @@ export interface MarketSnapshot {
     last24: Record<string, unknown>;
 }
 
+/**
+ * One row of unified transfer history returned by `getCombinedTransfers`.
+ *
+ * The backend's raw shape under `/api/trading/signed/transferscombined`
+ * is `{ count: number, rows: DBTransfer[] }`, where each row uses
+ * snake_case fields and numeric enums:
+ *
+ *   - `status` is a numeric enum (0=COMPLETED, 1=INFLIGHT, 2=DELAYED)
+ *   - `action_type` is a numeric enum
+ *     (0=WITHDRAWN, 1=DEPOSITED, 5=SENT, 6=RECEIVED, 7=RECOVERED,
+ *      8=ADD_GAS, 9=REMOVE_GAS, 10=AUTO_FILL,
+ *      11=WITHDRAW_PENDING, 12=DEPOSIT_PENDING)
+ *   - `bridge` is a numeric enum (-1=NATIVE, 0=LAYER0, 1=CELER, 2=ICM)
+ *   - `quantity` and `fee` arrive as already-display-decimal numeric
+ *     strings (NOT wei). The official frontend reads them straight
+ *     through Big.js without any decimals divide — there is no
+ *     wei→human conversion to apply.
+ *   - `source_*` and `target_*` describe the from-chain and to-chain
+ *     legs; `target_*` is null for transfers that never cross
+ *     (e.g. portfolio-internal sends and gas top-ups).
+ *
+ * The SDK normalises to camelCase, lifts the numeric enums to
+ * human-readable strings, and keeps `quantity`/`fee` as `number`
+ * (parsed from the Big-string) and `nonce` as `number`. Raw fields
+ * are dropped — callers should never need to look at the original
+ * snake_case keys.
+ */
+export type TransferStatus = 'COMPLETED' | 'INFLIGHT' | 'DELAYED';
+
+export type TransferActionType =
+    | 'WITHDRAWN'
+    | 'DEPOSITED'
+    | 'SENT'
+    | 'RECEIVED'
+    | 'RECOVERED'
+    | 'ADD_GAS'
+    | 'REMOVE_GAS'
+    | 'AUTO_FILL'
+    | 'WITHDRAW_PENDING'
+    | 'DEPOSIT_PENDING';
+
+export type TransferBridge = 'NATIVE' | 'LAYER0' | 'CELER' | 'ICM';
+
+export interface Transfer {
+    /** Human-readable action type lifted from the numeric `action_type` enum. */
+    actionType: TransferActionType;
+    /** Human-readable status lifted from the numeric `status` enum. */
+    status: TransferStatus;
+    /** Token symbol (canonical Dexalot subnet symbol, e.g. "ALOT", "USDC"). */
+    symbol: string;
+    /** Quantity in display units (already decoded by the backend). */
+    quantity: number;
+    /** Fee in display units (already decoded by the backend). */
+    fee: number;
+    /** Wallet address that owns this transfer row. */
+    traderAddress: string;
+    /** Bridge transport ("NATIVE" for portfolio-internal/gas legs). */
+    bridge: TransferBridge;
+    /** Optional explorer/bridge-page URL surfaced by the backend (may be empty). */
+    bridgeUrl: string;
+    /** Cross-chain message nonce; -1 for legs that don't use a bridge. */
+    nonce: number;
+    /** Source environment label (e.g. "subnet", "fuji-multi-avax"). */
+    sourceEnv: string;
+    /** Source chain id (numeric EVM chain id). */
+    sourceChainId: number;
+    /** Source-leg tx hash. */
+    sourceTx: string;
+    /** Source-leg ISO-8601 timestamp string (as emitted by the backend). */
+    sourceTs: string;
+    /** Target environment label, or null for transfers that never cross. */
+    targetEnv: string | null;
+    /** Target chain id, or null for transfers that never cross. */
+    targetChainId: number | null;
+    /** Target-leg tx hash, or null when no target leg exists. */
+    targetTx: string | null;
+    /** Target-leg ISO-8601 timestamp string, or null when no target leg exists. */
+    targetTs: string | null;
+}
+
 export interface OrderBook {
     pair: string;
     bids: OrderBookEntry[];

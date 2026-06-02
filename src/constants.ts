@@ -47,6 +47,12 @@ export const ENDPOINTS = {
   TRADING_TOKENS: "/privapi/trading/tokens",
   TRADING_DEPLOYMENT: "/privapi/trading/deployment",
   SIGNED_ORDERS: "/privapi/signed/orders",
+  // Unified transfer history (deposits + withdrawals + p2p + gas) under the
+  // `/api/trading/signed/` mountpoint. Requires the `x-signature` header.
+  // The backend route does not exist under `/privapi/...` — confirmed
+  // empirically (404 on /privapi/trading/signed/transferscombined,
+  // 204 OPTIONS on /api/trading/signed/transferscombined).
+  TRADING_COMBINED_TRANSFERS: "/api/trading/signed/transferscombined",
   RFQ_PAIRS: "/api/rfq/pairs",
   RFQ_FIRM_QUOTE: "/api/rfq/firmQuote",
   RFQ_PAIR_PRICE: "/api/rfq/pairprice",

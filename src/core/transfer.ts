@@ -1,5 +1,13 @@
 import { ethers, Contract, TransactionResponse, MaxUint256, Provider } from 'ethers';
-import { TokenBalance, TokenInfo, PricePoint } from '../types/index.js';
+import {
+    TokenBalance,
+    TokenInfo,
+    PricePoint,
+    Transfer,
+    TransferActionType,
+    TransferBridge,
+    TransferStatus,
+} from '../types/index.js';
 import { ACCESS_ID, ICM_CHAINS, DEFAULTS, ENDPOINTS } from '../constants.js';
 import { Utils } from '../utils/index.js';
 import { toWei } from '../utils/decimal.js';
@@ -13,10 +21,48 @@ import {
     validateChainIdentifier
 } from '../utils/inputValidators.js';
 
-// Re-export PricePoint so consumers importing from `dexalot-sdk/internal`
-// (which re-exports `core/transfer`) see the type alongside the methods
-// that return it. The canonical declaration lives in `src/types/index.ts`.
-export type { PricePoint } from '../types/index.js';
+// Re-export PricePoint / Transfer types so consumers importing from
+// `dexalot-sdk/internal` (which re-exports `core/transfer`) see them
+// alongside the methods that return them. The canonical declarations
+// live in `src/types/index.ts`.
+export type {
+    PricePoint,
+    Transfer,
+    TransferActionType,
+    TransferBridge,
+    TransferStatus,
+} from '../types/index.js';
+
+// Numeric enum → human-readable string lookup tables for the
+// `transferscombined` REST response. These mirror the
+// `TRANSFER_ACTION_TYPE` / `TRANSFER_STATUS` / `BRIDGES` enums that the
+// official Dexalot frontend uses to render the same rows; keeping them
+// in lockstep avoids drift if the backend ever adds new variants.
+const TRANSFER_ACTION_TYPE_LABELS: Record<number, TransferActionType> = {
+    0: 'WITHDRAWN',
+    1: 'DEPOSITED',
+    5: 'SENT',
+    6: 'RECEIVED',
+    7: 'RECOVERED',
+    8: 'ADD_GAS',
+    9: 'REMOVE_GAS',
+    10: 'AUTO_FILL',
+    11: 'WITHDRAW_PENDING',
+    12: 'DEPOSIT_PENDING',
+};
+
+const TRANSFER_STATUS_LABELS: Record<number, TransferStatus> = {
+    0: 'COMPLETED',
+    1: 'INFLIGHT',
+    2: 'DELAYED',
+};
+
+const TRANSFER_BRIDGE_LABELS: Record<number, TransferBridge> = {
+    [-1]: 'NATIVE',
+    0: 'LAYER0',
+    1: 'CELER',
+    2: 'ICM',
+};
 
 const PORTFOLIO_BRIDGE_ABI = [
     "function getBridgeFee(uint8 _bridge, uint32 _dstChainListOrgChainId, bytes32, uint256, address, bytes1) view returns (uint256)",
@@ -1471,5 +1517,210 @@ export class TransferClient extends SwapClient {
             opts?: { from?: number; to?: number }
         ): Promise<Result<PricePoint[]>> {
             return this._fetchPriceHistory(ENDPOINTS.INFO_HOURLY_PRICE_HISTORY, token, opts);
+        }
+
+        /**
+         * Coerce a Big-string display-decimal numeric value (e.g. `"100.5"`)
+         * into a finite non-negative `number`. The backend's
+         * `transferscombined` rows ship `quantity` and `fee` as already-
+         * display-decimal numeric strings — there is no wei→human
+         * conversion to apply. Returns `null` for non-string/non-number
+         * input, empty strings, or anything that does not parse to a
+         * finite non-negative float (mirroring how the frontend's
+         * NumberHelper guards against malformed rows).
+         */
+        private _coerceTransferAmount(raw: unknown): number | null {
+            if (typeof raw === 'number') {
+                return Number.isFinite(raw) && raw >= 0 ? raw : null;
+            }
+            if (typeof raw !== 'string') return null;
+            const trimmed = raw.trim();
+            if (trimmed === '') return null;
+            const n = parseFloat(trimmed);
+            if (!Number.isFinite(n) || n < 0) return null;
+            return n;
+        }
+
+        /**
+         * Normalize one raw `DBTransfer`-shaped row from the backend into
+         * the canonical `Transfer` type. Returns `null` for any row that
+         * is missing required fields or carries an unknown
+         * `action_type` / `status` enum — the public method silently
+         * drops these so a single bad row doesn't poison the page.
+         *
+         * `bridge` falls back to `"NATIVE"` for unknown enum values
+         * because the frontend treats unrecognised bridges the same way
+         * (display-only label, no behavior depends on the precise id),
+         * and the row is otherwise valid.
+         */
+        private _normalizeTransfer(raw: unknown): Transfer | null {
+            if (!raw || typeof raw !== 'object') return null;
+            const r = raw as Record<string, unknown>;
+
+            const actionKey = typeof r.action_type === 'number' ? r.action_type : null;
+            if (actionKey === null) return null;
+            const actionType = TRANSFER_ACTION_TYPE_LABELS[actionKey];
+            if (!actionType) return null;
+
+            const statusKey = typeof r.status === 'number' ? r.status : null;
+            if (statusKey === null) return null;
+            const status = TRANSFER_STATUS_LABELS[statusKey];
+            if (!status) return null;
+
+            const symbol = typeof r.symbol === 'string' ? r.symbol : null;
+            if (!symbol) return null;
+
+            const quantity = this._coerceTransferAmount(r.quantity);
+            if (quantity === null) return null;
+
+            // Fee defaults to 0 if missing or unparseable — many native /
+            // portfolio-internal legs report `"0"` and some omit the field.
+            const fee = this._coerceTransferAmount(r.fee) ?? 0;
+
+            const traderAddress = typeof r.traderaddress === 'string' ? r.traderaddress : '';
+            const bridgeKey = typeof r.bridge === 'number' ? r.bridge : -1;
+            const bridge = TRANSFER_BRIDGE_LABELS[bridgeKey] ?? 'NATIVE';
+
+            const bridgeUrl = typeof r.bridge_url === 'string' ? r.bridge_url : '';
+            const nonce = typeof r.nonce === 'number' ? r.nonce : -1;
+            const sourceEnv = typeof r.source_env === 'string' ? r.source_env : '';
+            const sourceChainId =
+                typeof r.source_chain_id === 'number' ? r.source_chain_id : 0;
+            const sourceTx = typeof r.source_tx === 'string' ? r.source_tx : '';
+            const sourceTs = typeof r.source_ts === 'string' ? r.source_ts : '';
+
+            const targetEnv = typeof r.target_env === 'string' ? r.target_env : null;
+            const targetChainId =
+                typeof r.target_chain_id === 'number' ? r.target_chain_id : null;
+            const targetTx = typeof r.target_tx === 'string' ? r.target_tx : null;
+            const targetTs = typeof r.target_ts === 'string' ? r.target_ts : null;
+
+            return {
+                actionType,
+                status,
+                symbol,
+                quantity,
+                fee,
+                traderAddress,
+                bridge,
+                bridgeUrl,
+                nonce,
+                sourceEnv,
+                sourceChainId,
+                sourceTx,
+                sourceTs,
+                targetEnv,
+                targetChainId,
+                targetTx,
+                targetTs,
+            };
+        }
+
+        /**
+         * Paginated history of every deposit, withdrawal, gas top-up,
+         * portfolio P2P send/receive, and bridge recovery involving the
+         * connected wallet. Returns canonical `Transfer[]` rows with
+         * camelCase fields and human-readable `actionType` / `status`
+         * / `bridge` labels lifted from the backend's numeric enums.
+         *
+         * Routes through the signed REST endpoint
+         * `/api/trading/signed/transferscombined`; `x-signature` is
+         * attached via the shared `_getAuthHeaders()` helper. The
+         * backend's request shape uses `itemsperpage` / `pageno` /
+         * `periodfrom` / `periodto` / `symbol` query params (NOT the
+         * `limit`/`offset`/`from`/`to`/`kind` shape suggested by a
+         * plan-only reading of the trade-kit tool wrapper) — the
+         * trade-kit's MCP tool forwards `limit`/`offset` blindly but
+         * the actual backend ignores them.
+         *
+         * Cached for 10 seconds (balance tier) per `(address, opts)`
+         * tuple — distinct signers and distinct filter combinations
+         * never share a cache slot. Returned amounts (`quantity`,
+         * `fee`) are already display-decimal numbers; no
+         * wei→human conversion is applied because the backend has
+         * already done it.
+         */
+        public async getCombinedTransfers(opts?: {
+            symbol?: string;
+            periodfrom?: string;
+            periodto?: string;
+            itemsperpage?: number;
+            pageno?: number;
+        }): Promise<Result<Transfer[]>> {
+            if (!this.signer) {
+                return Result.fail('Signer not configured.');
+            }
+            let address: string;
+            try {
+                address = await this.signer.getAddress();
+            } catch (e) {
+                return Result.fail(this._sanitizeError(e, 'resolving wallet address'));
+            }
+
+            const itemsperpage = opts?.itemsperpage ?? 100;
+            const pageno = opts?.pageno ?? 1;
+            const symbol = opts?.symbol ? this.normalizeToken(opts.symbol) : undefined;
+            const periodfrom = opts?.periodfrom;
+            const periodto = opts?.periodto;
+
+            // Cache key is namespaced by resolved address so signer
+            // swaps within a single client never collide on the same
+            // slot, and by the serialized opts so different filter
+            // combinations are distinct.
+            const cacheArgs = JSON.stringify({
+                itemsperpage,
+                pageno,
+                symbol,
+                periodfrom,
+                periodto,
+            });
+
+            const cachedFn = withInstanceCache(
+                this,
+                this._balanceCache,
+                `getCombinedTransfers|${address}|${cacheArgs}`,
+                async (): Promise<Result<Transfer[]>> => {
+                    try {
+                        const headers = await this._getAuthHeaders();
+                        const params: Record<string, string | number> = {
+                            itemsperpage,
+                            pageno,
+                        };
+                        if (symbol !== undefined) params.symbol = symbol;
+                        if (periodfrom !== undefined) params.periodfrom = periodfrom;
+                        if (periodto !== undefined) params.periodto = periodto;
+
+                        const data = await this._apiCall<unknown>(
+                            'get',
+                            ENDPOINTS.TRADING_COMBINED_TRANSFERS,
+                            { headers, params }
+                        );
+
+                        // Backend ships `{count, rows}`; we tolerate a
+                        // bare array as a forward-compat fallback.
+                        let rows: unknown[];
+                        if (Array.isArray(data)) {
+                            rows = data;
+                        } else if (data && typeof data === 'object') {
+                            const envelope = data as Record<string, unknown>;
+                            rows = Array.isArray(envelope.rows) ? envelope.rows : [];
+                        } else {
+                            return Result.fail(
+                                `Unexpected transfers response shape: expected object or array, got ${typeof data}.`
+                            );
+                        }
+
+                        const transfers: Transfer[] = [];
+                        for (const row of rows) {
+                            const normalized = this._normalizeTransfer(row);
+                            if (normalized) transfers.push(normalized);
+                        }
+                        return Result.ok(transfers);
+                    } catch (e) {
+                        return Result.fail(this._sanitizeError(e, 'fetching combined transfers'));
+                    }
+                }
+            );
+            return cachedFn();
         }
 }

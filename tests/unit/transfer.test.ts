@@ -2213,4 +2213,474 @@ describe('TransferClient', () => {
         });
     });
 
+    describe('getCombinedTransfers', () => {
+        // Real backend route is `/api/trading/signed/transferscombined` (signed).
+        // Verified empirically via OPTIONS preflight: the `/privapi/...` variant
+        // 404s while `/api/trading/signed/transferscombined` 204s. Response
+        // shape is `{ count, rows: DBTransfer[] }` with snake_case fields and
+        // numeric enums for `status` / `action_type` / `bridge`. Quantities and
+        // fees arrive as already-display-decimal numeric strings (the official
+        // frontend reads them straight through Big.js with no decimals divide).
+        beforeEach(() => {
+            // Disable retry so rejection from the spy doesn't get retried.
+            client.config.retryEnabled = false;
+            // Default x-signature header so _getAuthHeaders doesn't try to
+            // re-sign during the test; individual tests may override.
+            (client as any)._cachedSignature = `${mockAddress}:sig`;
+        });
+
+        const ROW_DEPOSIT_COMPLETED = {
+            status: 0, // COMPLETED
+            traderaddress: '0xtrader',
+            action_type: 1, // DEPOSITED
+            bridge: 0, // LAYER0
+            bridge_url: 'https://layerzeroscan.com/tx/0xsrc',
+            nonce: 42,
+            symbol: 'USDC',
+            quantity: '100.5',
+            fee: '0.001',
+            source_env: 'production-multi-avax',
+            source_chain_id: 43114,
+            source_tx: '0xsrc',
+            source_ts: '2026-05-01T00:00:00.000Z',
+            target_env: 'subnet',
+            target_chain_id: 12345,
+            target_tx: '0xtgt',
+            target_ts: '2026-05-01T00:01:00.000Z',
+            nbrof_rows: '17',
+        };
+
+        const ROW_GAS_INFLIGHT = {
+            status: 1, // INFLIGHT
+            traderaddress: '0xtrader',
+            action_type: 8, // ADD_GAS
+            bridge: -1, // NATIVE
+            bridge_url: '',
+            nonce: -1,
+            symbol: 'ALOT',
+            quantity: '5.0',
+            fee: '0',
+            source_env: 'subnet',
+            source_chain_id: 12345,
+            source_tx: '0xgas',
+            source_ts: '2026-05-02T00:00:00.000Z',
+            target_env: null,
+            target_chain_id: null,
+            target_tx: null,
+            target_ts: null,
+            nbrof_rows: '17',
+        };
+
+        it('returns Result.fail when no signer is configured', async () => {
+            client.signer = undefined as any;
+            const result = await client.getCombinedTransfers();
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Signer not configured');
+        });
+
+        it('returns canonical Transfer[] normalized from the {count, rows} envelope', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({
+                    count: 2,
+                    rows: [ROW_DEPOSIT_COMPLETED, ROW_GAS_INFLIGHT],
+                });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual([
+                {
+                    actionType: 'DEPOSITED',
+                    status: 'COMPLETED',
+                    symbol: 'USDC',
+                    quantity: 100.5,
+                    fee: 0.001,
+                    traderAddress: '0xtrader',
+                    bridge: 'LAYER0',
+                    bridgeUrl: 'https://layerzeroscan.com/tx/0xsrc',
+                    nonce: 42,
+                    sourceEnv: 'production-multi-avax',
+                    sourceChainId: 43114,
+                    sourceTx: '0xsrc',
+                    sourceTs: '2026-05-01T00:00:00.000Z',
+                    targetEnv: 'subnet',
+                    targetChainId: 12345,
+                    targetTx: '0xtgt',
+                    targetTs: '2026-05-01T00:01:00.000Z',
+                },
+                {
+                    actionType: 'ADD_GAS',
+                    status: 'INFLIGHT',
+                    symbol: 'ALOT',
+                    quantity: 5,
+                    fee: 0,
+                    traderAddress: '0xtrader',
+                    bridge: 'NATIVE',
+                    bridgeUrl: '',
+                    nonce: -1,
+                    sourceEnv: 'subnet',
+                    sourceChainId: 12345,
+                    sourceTx: '0xgas',
+                    sourceTs: '2026-05-02T00:00:00.000Z',
+                    targetEnv: null,
+                    targetChainId: null,
+                    targetTx: null,
+                    targetTs: null,
+                },
+            ]);
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.TRADING_COMBINED_TRANSFERS,
+                expect.objectContaining({
+                    headers: expect.objectContaining({ 'x-signature': `${mockAddress}:sig` }),
+                    params: expect.objectContaining({
+                        itemsperpage: 100,
+                        pageno: 1,
+                    }),
+                })
+            );
+        });
+
+        it('accepts a top-level array response shape as a fallback', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                ROW_DEPOSIT_COMPLETED,
+            ]);
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toHaveLength(1);
+            expect(result.data![0].symbol).toBe('USDC');
+        });
+
+        it('forwards symbol / periodfrom / periodto / itemsperpage / pageno query params', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({ count: 0, rows: [] });
+
+            await client.getCombinedTransfers({
+                symbol: 'usdc', // lowercase to verify normalization
+                periodfrom: '2026-05-01T00:00:00.000Z',
+                periodto: '2026-05-31T00:00:00.000Z',
+                itemsperpage: 50,
+                pageno: 3,
+            });
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.TRADING_COMBINED_TRANSFERS,
+                expect.objectContaining({
+                    params: {
+                        itemsperpage: 50,
+                        pageno: 3,
+                        symbol: 'USDC',
+                        periodfrom: '2026-05-01T00:00:00.000Z',
+                        periodto: '2026-05-31T00:00:00.000Z',
+                    },
+                })
+            );
+        });
+
+        it('defaults to itemsperpage=100 and pageno=1 when no opts supplied', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({ count: 0, rows: [] });
+
+            await client.getCombinedTransfers();
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.TRADING_COMBINED_TRANSFERS,
+                expect.objectContaining({
+                    params: { itemsperpage: 100, pageno: 1 },
+                })
+            );
+        });
+
+        it('caches per (address, opts) — repeated identical calls share one fetch', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValue({ count: 0, rows: [] });
+
+            await client.getCombinedTransfers();
+            await client.getCombinedTransfers();
+
+            expect(apiSpy).toHaveBeenCalledTimes(1);
+        });
+
+        it('uses distinct cache slots per opts tuple', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValue({ count: 0, rows: [] });
+
+            await client.getCombinedTransfers();
+            await client.getCombinedTransfers({ symbol: 'USDC' });
+            await client.getCombinedTransfers({ pageno: 2 });
+
+            expect(apiSpy).toHaveBeenCalledTimes(3);
+        });
+
+        it('returns Result.fail when _apiCall rejects', async () => {
+            jest.spyOn(client as any, '_apiCall').mockRejectedValueOnce(
+                new Error('upstream down')
+            );
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(false);
+            expect(result.error).toBeDefined();
+        });
+
+        it('returns an empty array when the API returns an empty rows list', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 0,
+                rows: [],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual([]);
+        });
+
+        it('skips malformed rows that are missing required fields', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 3,
+                rows: [
+                    ROW_DEPOSIT_COMPLETED,
+                    { status: 0 }, // missing nearly everything
+                    null, // not even an object
+                ],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toHaveLength(1);
+            expect(result.data![0].symbol).toBe('USDC');
+        });
+
+        it('skips rows whose action_type or status is not a known enum value', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 2,
+                rows: [
+                    { ...ROW_DEPOSIT_COMPLETED, action_type: 999 },
+                    { ...ROW_DEPOSIT_COMPLETED, status: 999 },
+                ],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual([]);
+        });
+
+        it('falls back to BRIDGES.NATIVE-like label when bridge enum is unrecognised', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 1,
+                rows: [{ ...ROW_DEPOSIT_COMPLETED, bridge: 999 }],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toHaveLength(1);
+            // Unknown bridge id is mapped to the catch-all `NATIVE` label —
+            // the row is still returned because action_type + status are valid.
+            expect(result.data![0].bridge).toBe('NATIVE');
+        });
+
+        it('tolerates a non-array `rows` field by returning empty', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 0,
+                rows: 'not-an-array',
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual([]);
+        });
+
+        it('returns Result.fail when the response is neither object nor array', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce(
+                'just a string'
+            );
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(false);
+            expect(result.error).toBeDefined();
+        });
+
+        it('reuses _getAuthHeaders to attach the x-signature header', async () => {
+            // Force fresh sign by clearing the cached header and config.
+            (client as any)._cachedSignature = undefined;
+            mockSigner.signMessage = jest.fn().mockResolvedValue('0xdeadbeef');
+
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({ count: 0, rows: [] });
+
+            await client.getCombinedTransfers();
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.TRADING_COMBINED_TRANSFERS,
+                expect.objectContaining({
+                    headers: expect.objectContaining({
+                        'x-signature': `${mockAddress}:0xdeadbeef`,
+                    }),
+                })
+            );
+        });
+
+        it('uses distinct cache slots per signer address', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValue({ count: 0, rows: [] });
+
+            await client.getCombinedTransfers();
+            mockSigner.getAddress.mockResolvedValueOnce('0xOtherUser');
+            await client.getCombinedTransfers();
+
+            expect(apiSpy).toHaveBeenCalledTimes(2);
+        });
+
+        it('returns Result.fail when signer.getAddress rejects', async () => {
+            mockSigner.getAddress.mockRejectedValueOnce(new Error('locked'));
+            const result = await client.getCombinedTransfers();
+            expect(result.success).toBe(false);
+            expect(result.error).toBeDefined();
+        });
+
+        it('accepts numeric quantity / fee values as a forward-compat fallback', async () => {
+            // Backend currently emits Big-strings, but the SDK also
+            // accepts plain numbers in case the wire shape ever flips.
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 1,
+                rows: [{ ...ROW_DEPOSIT_COMPLETED, quantity: 200, fee: 0.5 }],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toHaveLength(1);
+            expect(result.data![0].quantity).toBe(200);
+            expect(result.data![0].fee).toBe(0.5);
+        });
+
+        it('drops rows whose numeric quantity is not a finite non-negative value', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 3,
+                rows: [
+                    { ...ROW_DEPOSIT_COMPLETED, quantity: -1 },
+                    { ...ROW_DEPOSIT_COMPLETED, quantity: Number.POSITIVE_INFINITY },
+                    { ...ROW_DEPOSIT_COMPLETED, quantity: Number.NaN },
+                ],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual([]);
+        });
+
+        it('drops rows whose status/symbol fields are the wrong type', async () => {
+            // Status as a string (instead of number) → row dropped.
+            // Symbol as a number (instead of string) → row dropped.
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 2,
+                rows: [
+                    { ...ROW_DEPOSIT_COMPLETED, status: 'COMPLETED' as any },
+                    { ...ROW_DEPOSIT_COMPLETED, symbol: 999 as any },
+                ],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual([]);
+        });
+
+        it('drops rows whose quantity is an empty / non-parseable string', async () => {
+            // Empty string → null → row dropped.
+            // Non-numeric string → parseFloat returns NaN → null → dropped.
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 2,
+                rows: [
+                    { ...ROW_DEPOSIT_COMPLETED, quantity: '   ' },
+                    { ...ROW_DEPOSIT_COMPLETED, quantity: 'not-a-number' },
+                ],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual([]);
+        });
+
+        it('fills in safe defaults when optional fields have wrong types or are missing', async () => {
+            // Minimal row — only the required `action_type` + `status` +
+            // `symbol` + `quantity` are well-typed; every other field is
+            // either missing, the wrong type, or has an unknown enum
+            // value. The normalizer should still emit a row with the
+            // sentinel defaults documented on the Transfer type.
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 1,
+                rows: [
+                    {
+                        action_type: 1, // DEPOSITED
+                        status: 0, // COMPLETED
+                        symbol: 'USDC',
+                        quantity: '100',
+                        // fee missing → defaults to 0
+                        // traderaddress wrong type → defaults to ''
+                        traderaddress: 999,
+                        // bridge missing → defaults to -1 / NATIVE
+                        // bridge_url wrong type → defaults to ''
+                        bridge_url: null,
+                        // nonce missing → defaults to -1
+                        // source_env wrong type → defaults to ''
+                        source_env: 5,
+                        // source_chain_id missing → defaults to 0
+                        // source_tx missing → defaults to ''
+                        // source_ts missing → defaults to ''
+                        // target_* fields wrong type → defaults to null
+                        target_env: 7,
+                        target_chain_id: 'not-a-number',
+                        target_tx: 9,
+                        target_ts: 11,
+                    },
+                ],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toHaveLength(1);
+            expect(result.data![0]).toEqual({
+                actionType: 'DEPOSITED',
+                status: 'COMPLETED',
+                symbol: 'USDC',
+                quantity: 100,
+                fee: 0,
+                traderAddress: '',
+                bridge: 'NATIVE',
+                bridgeUrl: '',
+                nonce: -1,
+                sourceEnv: '',
+                sourceChainId: 0,
+                sourceTx: '',
+                sourceTs: '',
+                targetEnv: null,
+                targetChainId: null,
+                targetTx: null,
+                targetTs: null,
+            });
+        });
+    });
+
 });
