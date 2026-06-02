@@ -1134,6 +1134,139 @@ export class CLOBClient extends BaseClient {
         }
 
         /**
+         * Paginated per-account order history (any status: NEW, PARTIAL,
+         * FILLED, CANCELED, EXPIRED, KILLED, REJECTED). Returns canonical
+         * `Order[]` rows in the same shape as `getOpenOrders` — they pass
+         * through the shared `_transformOrderFromAPI` helper so callers can
+         * mix the two result sets without re-normalising.
+         *
+         * Routes through the signed REST endpoint
+         * `/api/trading/signed/orders` (distinct from `getOpenOrders`'
+         * `/privapi/signed/orders` which only returns currently-open
+         * rows). The trade-kit's `clob_get_orders_by_account` tool calls
+         * the same endpoint via `signedGet("orders", ...)` and provided
+         * the empirical verification for the path + query shape used here.
+         *
+         * Cached for 10 seconds (balance tier) per `(address, opts)` tuple.
+         * The resolved address is either the explicit `account` argument
+         * or the connected wallet address; distinct addresses and
+         * distinct filter combinations never share a cache slot.
+         *
+         * When no wallet is configured AND no explicit `account` is
+         * passed, returns `Result.fail` — the call has no addressee.
+         * When a wallet IS configured, the `x-signature` header is
+         * attached via the shared `_getAuthHeaders()` helper; when only
+         * an explicit account is supplied (no signer), the auth header
+         * is omitted and the backend may reject — this lets read-only
+         * callers query by address without forcing a key, mirroring the
+         * SDK's general read-only ergonomics.
+         *
+         * @param account Optional trader address; defaults to the
+         *   connected wallet's address. At least one must be available.
+         * @param opts Optional filters and pagination
+         *   (`pair` / `status` / `limit` / `offset`); defaults to
+         *   `{ limit: 100, offset: 0 }` to match the trade-kit's tool wrapper.
+         */
+        public async getOrderHistory(
+            account?: string,
+            opts?: {
+                pair?: string;
+                status?: 'NEW' | 'REJECTED' | 'PARTIAL' | 'FILLED' | 'CANCELED' | 'EXPIRED' | 'KILLED' | string;
+                limit?: number;
+                offset?: number;
+            }
+        ): Promise<Result<Order[]>> {
+            let address: string;
+            if (account) {
+                address = account;
+            } else if (this.signer) {
+                try {
+                    address = await this.signer.getAddress();
+                } catch (e) {
+                    return Result.fail(this._sanitizeError(e, 'resolving wallet address'));
+                }
+            } else {
+                return Result.fail(
+                    'getOrderHistory requires either an account argument or a configured wallet.'
+                );
+            }
+
+            if (opts?.pair) {
+                const pairResult = validatePairFormat(opts.pair, 'pair');
+                if (!pairResult.success) {
+                    return Result.fail(pairResult.error!);
+                }
+            }
+
+            const limit = opts?.limit ?? 100;
+            const offset = opts?.offset ?? 0;
+            const pair = opts?.pair;
+            const status = opts?.status;
+
+            const cacheArgs = JSON.stringify({ pair, status, limit, offset });
+
+            const cachedFn = withInstanceCache(
+                this,
+                this._balanceCache,
+                `getOrderHistory|${address}|${cacheArgs}`,
+                async (): Promise<Result<Order[]>> => {
+                    try {
+                        const headers: Record<string, string> = this.signer
+                            ? await this._getAuthHeaders()
+                            : {};
+                        const params: Record<string, string | number> = {
+                            traderaddress: address,
+                            limit,
+                            offset,
+                        };
+                        if (pair !== undefined) params.pair = pair;
+                        if (status !== undefined) params.status = status;
+
+                        const data = await this._apiCall<unknown>(
+                            'get',
+                            ENDPOINTS.TRADING_SIGNED_ORDERS_HISTORY,
+                            { headers, params }
+                        );
+
+                        let orders: any[];
+                        if (Array.isArray(data)) {
+                            orders = data;
+                        } else if (
+                            data &&
+                            typeof data === 'object' &&
+                            Array.isArray((data as Record<string, unknown>).rows)
+                        ) {
+                            orders = (data as Record<string, unknown>).rows as any[];
+                        } else if (data && typeof data === 'object') {
+                            orders = [data];
+                        } else {
+                            return Result.fail(
+                                `Unexpected order history response shape: expected object or array, got ${typeof data}.`
+                            );
+                        }
+
+                        if (orders.some((order) => {
+                            const orderPair = this._resolvePairFromOrder(order);
+                            const tradePairId = order.tradePairId ?? order.tradepairid ?? order.trade_pair_id;
+                            return !orderPair || !tradePairId;
+                        })) {
+                            const pairsResult = await this.getClobPairs();
+                            if (!pairsResult.success) {
+                                return Result.fail(pairsResult.error!);
+                            }
+                        }
+
+                        const transformed = orders.map((order) => this._transformOrderFromAPI(order));
+                        return Result.ok(transformed);
+                    } catch (e) {
+                        return Result.fail(this._sanitizeError(e, 'fetching order history'));
+                    }
+                }
+            );
+            return cachedFn();
+        }
+
+        /**
          * Get OrderBook.
          * Cached for 1 second (orderbook data).
          */

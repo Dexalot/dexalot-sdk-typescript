@@ -47,6 +47,17 @@ export const ENDPOINTS = {
   TRADING_TOKENS: "/privapi/trading/tokens",
   TRADING_DEPLOYMENT: "/privapi/trading/deployment",
   SIGNED_ORDERS: "/privapi/signed/orders",
+  // Paginated per-account order history (any status) under the
+  // `/api/trading/signed/` mountpoint. Requires the `x-signature` header.
+  // Distinct from `SIGNED_ORDERS` above — `/privapi/signed/orders` returns
+  // the currently-open orders for the connected wallet (used by
+  // `getOpenOrders`), while `/api/trading/signed/orders` returns the
+  // full historical order list (any status, paginated, supports
+  // pair/status/limit/offset filters and an explicit `traderaddress`).
+  // The trade-kit's `clob_get_orders_by_account` tool hits this path via
+  // its `signedGet("orders", ...)` helper which mounts at
+  // `${baseUrl}/trading/signed/<path>`.
+  TRADING_SIGNED_ORDERS_HISTORY: "/api/trading/signed/orders",
   // Unified transfer history (deposits + withdrawals + p2p + gas) under the
   // `/api/trading/signed/` mountpoint. Requires the `x-signature` header.
   // The backend route does not exist under `/privapi/...` — confirmed

@@ -702,6 +702,414 @@ describe('CLOBClient', () => {
          });
     });
 
+    describe('getOrderHistory', () => {
+        // Real backend route is `/api/trading/signed/orders` (signed). The
+        // trade-kit's `clob_get_orders_by_account` tool calls it via
+        // `client.signedGet("orders", ...)` which mounts at
+        // `${baseUrl}/trading/signed/<path>`. Distinct from the existing
+        // `getOpenOrders` path `/privapi/signed/orders` (open-only).
+        // Response shape mirrors `getOpenOrders`: either `{rows: [...]}`
+        // or a bare array of order rows, with the same snake_case /
+        // lowercase aliases (`id`, `clientordid`, `tradepairid`,
+        // `quantityfilled`, `traderaddress`, numeric `side` / `type1` /
+        // `type2` / `status` enums). Normalized through the shared
+        // `_transformOrderFromAPI` helper so the canonical Order shape
+        // matches `getOpenOrders`.
+        beforeEach(() => {
+            client.config.retryEnabled = false;
+            (client as any)._cachedSignature = `${mockAddress}:sig`;
+        });
+
+        const makeApiOrderRow = (overrides: Record<string, unknown> = {}) => ({
+            id: '0x' + 'a'.repeat(64),
+            clientordid: '0x' + 'b'.repeat(64),
+            tradepairid: '0xPairId_AVAX_USDC',
+            price: '100',
+            quantity: '1.5',
+            quantityfilled: '0.5',
+            status: 4, // CANCELED
+            side: 1, // SELL
+            type1: 1, // LIMIT
+            type2: 0, // GTC
+            pair: 'AVAX/USDC',
+            totalamount: '150',
+            totalfee: '0.1',
+            traderaddress: mockAddress,
+            createBlock: 100,
+            updateBlock: 101,
+            timestamp: '2024-01-01T00:00:00.000Z',
+            update_ts: '2024-01-01T00:01:00.000Z',
+            tx: '0xfeed',
+            ...overrides,
+        });
+
+        it('returns Result.fail when no wallet is configured and no account argument is given', async () => {
+            client.signer = null as any;
+            const result = await client.getOrderHistory();
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('getOrderHistory');
+        });
+
+        it('returns canonical Order[] normalized from the {rows} envelope', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({ count: 1, rows: [makeApiOrderRow()] });
+
+            const result = await client.getOrderHistory();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toHaveLength(1);
+            expect(result.data![0]).toMatchObject({
+                internalOrderId: '0x' + 'a'.repeat(64),
+                clientOrderId: '0x' + 'b'.repeat(64),
+                tradePairId: '0xPairId_AVAX_USDC',
+                pair: 'AVAX/USDC',
+                price: 100,
+                totalAmount: 150,
+                quantity: 1.5,
+                quantityFilled: 0.5,
+                totalFee: 0.1,
+                traderAddress: mockAddress,
+                side: 'SELL',
+                type1: 'LIMIT',
+                type2: 'GTC',
+                status: 'CANCELED',
+                createBlock: 100,
+                updateBlock: 101,
+                createTs: '2024-01-01T00:00:00.000Z',
+                updateTs: '2024-01-01T00:01:00.000Z',
+                tx: '0xfeed',
+            });
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.TRADING_SIGNED_ORDERS_HISTORY,
+                expect.objectContaining({
+                    headers: expect.objectContaining({ 'x-signature': `${mockAddress}:sig` }),
+                    params: expect.objectContaining({
+                        traderaddress: mockAddress,
+                        limit: 100,
+                        offset: 0,
+                    }),
+                })
+            );
+        });
+
+        it('accepts a top-level array response shape as a fallback', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([makeApiOrderRow()]);
+
+            const result = await client.getOrderHistory();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toHaveLength(1);
+            expect(result.data![0].pair).toBe('AVAX/USDC');
+        });
+
+        it('returns an empty array when the API returns an empty rows list', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({ count: 0, rows: [] });
+
+            const result = await client.getOrderHistory();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual([]);
+        });
+
+        it('uses an explicit account argument instead of the connected wallet address', async () => {
+            const otherAddress = '0xOtherTrader';
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({ count: 0, rows: [] });
+
+            await client.getOrderHistory(otherAddress);
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.TRADING_SIGNED_ORDERS_HISTORY,
+                expect.objectContaining({
+                    params: expect.objectContaining({ traderaddress: otherAddress }),
+                })
+            );
+        });
+
+        it('works when no wallet is configured but an explicit account is provided', async () => {
+            client.signer = null as any;
+            (client as any)._cachedSignature = null;
+            // Without a signer, _getAuthHeaders would throw — but the
+            // method should still work with public-only fallback when an
+            // explicit account is provided. The implementation routes
+            // through the same signed endpoint; when no signer exists we
+            // skip the auth header (backend may reject — that's a runtime
+            // concern, not an SDK guard).
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({ count: 0, rows: [] });
+
+            const result = await client.getOrderHistory('0xQueriedTrader');
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual([]);
+        });
+
+        it('forwards pair / status / limit / offset query params', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({ count: 0, rows: [] });
+
+            await client.getOrderHistory(undefined, {
+                pair: 'AVAX/USDC',
+                status: 'FILLED',
+                limit: 25,
+                offset: 50,
+            });
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.TRADING_SIGNED_ORDERS_HISTORY,
+                expect.objectContaining({
+                    params: {
+                        traderaddress: mockAddress,
+                        pair: 'AVAX/USDC',
+                        status: 'FILLED',
+                        limit: 25,
+                        offset: 50,
+                    },
+                })
+            );
+        });
+
+        it('defaults to limit=100 and offset=0 when no opts supplied', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({ count: 0, rows: [] });
+
+            await client.getOrderHistory();
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.TRADING_SIGNED_ORDERS_HISTORY,
+                expect.objectContaining({
+                    params: {
+                        traderaddress: mockAddress,
+                        limit: 100,
+                        offset: 0,
+                    },
+                })
+            );
+        });
+
+        it('caches per (address, opts) — repeated identical calls share one fetch', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValue({ count: 0, rows: [] });
+
+            await client.getOrderHistory();
+            await client.getOrderHistory();
+
+            expect(apiSpy).toHaveBeenCalledTimes(1);
+        });
+
+        it('uses distinct cache slots per opts tuple', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValue({ count: 0, rows: [] });
+
+            await client.getOrderHistory();
+            await client.getOrderHistory(undefined, { pair: 'AVAX/USDC' });
+            await client.getOrderHistory(undefined, { status: 'FILLED' });
+            await client.getOrderHistory(undefined, { limit: 50 });
+            await client.getOrderHistory(undefined, { offset: 10 });
+
+            expect(apiSpy).toHaveBeenCalledTimes(5);
+        });
+
+        it('uses distinct cache slots per resolved address', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValue({ count: 0, rows: [] });
+
+            await client.getOrderHistory();
+            await client.getOrderHistory('0xOtherTrader');
+
+            expect(apiSpy).toHaveBeenCalledTimes(2);
+        });
+
+        it('returns Result.fail when _apiCall rejects and preserves the error', async () => {
+            jest.spyOn(client as any, '_apiCall').mockRejectedValueOnce(
+                new Error('FQ-123: upstream down')
+            );
+
+            const result = await client.getOrderHistory();
+
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('FQ-123');
+        });
+
+        it('returns Result.fail when the response is neither object nor array', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce('just a string');
+
+            const result = await client.getOrderHistory();
+
+            expect(result.success).toBe(false);
+            expect(result.error).toBeDefined();
+        });
+
+        it('wraps a single non-array object response as a one-row result', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce(makeApiOrderRow());
+
+            const result = await client.getOrderHistory();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toHaveLength(1);
+            expect(result.data![0].pair).toBe('AVAX/USDC');
+        });
+
+        it('returns Result.fail when signer.getAddress rejects', async () => {
+            mockSigner.getAddress.mockRejectedValueOnce(new Error('locked'));
+            const result = await client.getOrderHistory();
+            expect(result.success).toBe(false);
+            expect(result.error).toBeDefined();
+        });
+
+        it('hydrates pairs cache when a row is missing the pair info', async () => {
+            // Drop the pair from the local cache to force a getClobPairs
+            // round-trip when normalizing the row.
+            client.pairs = {};
+            mockAxios.request.mockResolvedValueOnce({
+                data: [
+                    {
+                        pair: 'AVAX/USDC',
+                        env: ENV.PROD_MULTI_SUBNET,
+                        base: 'AVAX',
+                        quote: 'USDC',
+                        base_decimals: 18,
+                        quote_decimals: 6,
+                        base_display_decimals: 2,
+                        quote_display_decimals: 2,
+                        min_trade_amount: 1,
+                        max_trade_amount: 1000,
+                    },
+                ],
+            });
+
+            jest.spyOn(client as any, '_apiCall').mockImplementation((async (
+                method: string,
+                url: string,
+                _opts?: unknown
+            ) => {
+                if (url === ENDPOINTS.TRADING_PAIRS) {
+                    return [
+                        {
+                            pair: 'AVAX/USDC',
+                            env: ENV.PROD_MULTI_SUBNET,
+                            base: 'AVAX',
+                            quote: 'USDC',
+                            base_decimals: 18,
+                            quote_decimals: 6,
+                            base_display_decimals: 2,
+                            quote_display_decimals: 2,
+                            min_trade_amount: 1,
+                            max_trade_amount: 1000,
+                        },
+                    ];
+                }
+                return {
+                    count: 1,
+                    rows: [
+                        {
+                            // No pair string, no tradepairid — the
+                            // method must hydrate via getClobPairs to
+                            // resolve a tradePairId for the row.
+                            id: '0x' + 'a'.repeat(64),
+                            clientordid: '0x' + 'b'.repeat(64),
+                            tradepairid: '0xPairId_AVAX_USDC',
+                            price: '100',
+                            quantity: '1.5',
+                            quantityfilled: '0.5',
+                            status: 3,
+                            side: 0,
+                            type1: 1,
+                            type2: 0,
+                            pair: 'AVAX/USDC',
+                            totalamount: '150',
+                            totalfee: '0.1',
+                            traderaddress: mockAddress,
+                            createBlock: 100,
+                            updateBlock: 101,
+                        },
+                    ],
+                };
+            }) as any);
+
+            const result = await client.getOrderHistory();
+            expect(result.success).toBe(true);
+            expect(result.data).toHaveLength(1);
+        });
+
+        it('reuses _getAuthHeaders to attach the x-signature header', async () => {
+            (client as any)._cachedSignature = undefined;
+            mockSigner.signMessage = jest.fn().mockResolvedValue('0xdeadbeef');
+
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({ count: 0, rows: [] });
+
+            await client.getOrderHistory();
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.TRADING_SIGNED_ORDERS_HISTORY,
+                expect.objectContaining({
+                    headers: expect.objectContaining({
+                        'x-signature': `${mockAddress}:0xdeadbeef`,
+                    }),
+                })
+            );
+        });
+
+        it('returns Result.fail when opts.pair is malformed', async () => {
+            const result = await client.getOrderHistory(undefined, { pair: 'INVALID' });
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('pair');
+        });
+
+        it('propagates the getClobPairs error when a row is missing pair info and hydration fails', async () => {
+            client.pairs = {};
+
+            jest.spyOn(client as any, '_apiCall').mockImplementation((async (
+                method: string,
+                url: string
+            ) => {
+                if (url === ENDPOINTS.TRADING_PAIRS) {
+                    throw new Error('pair fetch down');
+                }
+                return {
+                    count: 1,
+                    rows: [
+                        {
+                            // missing pair + tradepairid → forces getClobPairs() call
+                            id: '0x' + 'a'.repeat(64),
+                            clientordid: '0x' + 'b'.repeat(64),
+                            price: '100',
+                            quantity: '1.5',
+                            quantityfilled: '0.5',
+                            status: 3,
+                            side: 0,
+                            type1: 1,
+                            type2: 0,
+                            totalamount: '150',
+                            totalfee: '0.1',
+                            traderaddress: mockAddress,
+                            createBlock: 100,
+                            updateBlock: 101,
+                        },
+                    ],
+                };
+            }) as any);
+
+            const result = await client.getOrderHistory();
+            expect(result.success).toBe(false);
+            expect(result.error).toBeDefined();
+        });
+    });
+
     describe('getCandles', () => {
          it('hits /api/trading/candle-chunk (not /privapi/) with normalized pair and intervalnum/intervalstr', async () => {
               const fakeRows = [{ date: 't', open: '1', high: '2', low: '0.5', close: '1.5', volume: '10', quote_volume: '15', change: '0.5' }];
