@@ -1866,6 +1866,163 @@ describe('BaseClient', () => {
         });
     });
 
+    describe('_apiCall error preservation', () => {
+        // The Dexalot REST API encodes failures as
+        // { reasonCode, reason } (also tolerates reason_code and message
+        // as aliases that some endpoints emit). _apiCall must lift these
+        // into the thrown Error's message so callers' Result.fail strings
+        // surface the backend reason instead of collapsing to
+        // "Request failed with status code N".
+        let isAxiosErrorSpy: jest.SpyInstance;
+
+        beforeEach(() => {
+            (axios.create as jest.Mock).mockReturnValue(mockedAxios);
+            // Disable retry so a single mockRejectedValueOnce isn't
+            // re-attempted (and so test ordering can't leak a sticky
+            // mockRejectedValue from earlier tests into a retry slot).
+            client = new BaseClient(
+                createConfig({
+                    parentEnv: 'fuji-multi',
+                    retryEnabled: false,
+                })
+            );
+            // Default to "this IS an axios error" for the body-lift tests;
+            // overridden per test where needed (non-axios path).
+            isAxiosErrorSpy = jest
+                .spyOn(axios, 'isAxiosError')
+                .mockReturnValue(true);
+        });
+
+        afterEach(() => {
+            isAxiosErrorSpy.mockRestore();
+        });
+
+        it('extracts reasonCode + reason from axios response body', async () => {
+            const axiosError: any = new Error('Request failed with status code 400');
+            axiosError.response = {
+                data: { reasonCode: 'FQ-015', reason: 'insufficient liquidity' },
+            };
+            mockedAxios.request.mockRejectedValueOnce(axiosError);
+
+            await expect(client._apiCall('get', '/x')).rejects.toThrow(
+                'FQ-015: insufficient liquidity'
+            );
+        });
+
+        it('lifts reasonCode alias reason_code with reason alias message', async () => {
+            const axiosError: any = new Error('Request failed with status code 400');
+            axiosError.response = {
+                data: { reason_code: 'T-TMDQ-01', message: 'amount too small' },
+            };
+            mockedAxios.request.mockRejectedValueOnce(axiosError);
+
+            await expect(client._apiCall('get', '/x')).rejects.toThrow(
+                'T-TMDQ-01: amount too small'
+            );
+        });
+
+        it('falls back to e.message when reasonCode set but reason absent', async () => {
+            const axiosError: any = new Error('Request failed with status code 500');
+            axiosError.response = { data: { reasonCode: 'P-OK01' } };
+            mockedAxios.request.mockRejectedValueOnce(axiosError);
+
+            await expect(client._apiCall('get', '/x')).rejects.toThrow(
+                'P-OK01: Request failed with status code 500'
+            );
+        });
+
+        it('falls back to reason alone when no reasonCode', async () => {
+            const axiosError: any = new Error('Request failed with status code 400');
+            axiosError.response = { data: { reason: 'something else' } };
+            mockedAxios.request.mockRejectedValueOnce(axiosError);
+
+            await expect(client._apiCall('get', '/x')).rejects.toThrow(
+                /^something else$/
+            );
+        });
+
+        it('falls back to message alias alone when no reasonCode', async () => {
+            const axiosError: any = new Error('Request failed with status code 400');
+            axiosError.response = { data: { message: 'plain reason from message field' } };
+            mockedAxios.request.mockRejectedValueOnce(axiosError);
+
+            await expect(client._apiCall('get', '/x')).rejects.toThrow(
+                /^plain reason from message field$/
+            );
+        });
+
+        it('preserves original error when response.data is empty', async () => {
+            const axiosError: any = new Error('Request failed with status code 500');
+            axiosError.response = { data: {} };
+            mockedAxios.request.mockRejectedValueOnce(axiosError);
+
+            await expect(client._apiCall('get', '/x')).rejects.toThrow(
+                'Request failed with status code 500'
+            );
+        });
+
+        it('preserves original error when axios error has no response (network failure)', async () => {
+            const axiosError: any = new Error('Network Error');
+            // No response field at all
+            mockedAxios.request.mockRejectedValueOnce(axiosError);
+
+            await expect(client._apiCall('get', '/x')).rejects.toThrow('Network Error');
+        });
+
+        it('preserves original error when response.data is not an object (e.g. HTML)', async () => {
+            const axiosError: any = new Error('Request failed with status code 502');
+            axiosError.response = { data: '<html>502 Bad Gateway</html>' };
+            mockedAxios.request.mockRejectedValueOnce(axiosError);
+
+            await expect(client._apiCall('get', '/x')).rejects.toThrow(
+                'Request failed with status code 502'
+            );
+        });
+
+        it('preserves original error when not an axios error', async () => {
+            isAxiosErrorSpy.mockReturnValue(false);
+            mockedAxios.request.mockRejectedValueOnce(new Error('generic non-axios failure'));
+
+            await expect(client._apiCall('get', '/x')).rejects.toThrow(
+                'generic non-axios failure'
+            );
+        });
+
+        it('falls back to String(e) for reasonCode tail when error is not an Error instance', async () => {
+            // Hit the `String(e)` branch in the reasonCode-with-no-reason tail:
+            // axios is mocked into thinking this is an axios error, but
+            // it is not an Error instance so e.message is unavailable.
+            // Use a plain object with a custom toString.
+            const oddError = {
+                response: { data: { reasonCode: 'X-001' } },
+                toString: () => 'odd raw value thrown',
+            };
+            mockedAxios.request.mockRejectedValueOnce(oddError);
+
+            await expect(client._apiCall('get', '/x')).rejects.toThrow(
+                'X-001: odd raw value thrown'
+            );
+        });
+
+        it('lifted error surfaces through caller _sanitizeError into Result.fail', async () => {
+            // End-to-end check: a caller (getEnvironments) wraps the
+            // thrown error via _sanitizeError into Result.fail. The
+            // reasonCode-prefixed message must survive sanitization
+            // (no paths/URLs/secrets in "FQ-015: ...").
+            const axiosError: any = new Error('Request failed with status code 400');
+            axiosError.response = {
+                data: { reasonCode: 'FQ-015', reason: 'insufficient liquidity' },
+            };
+            // Force cache miss so the API is actually called
+            client.environmentsCache = [];
+            mockedAxios.request.mockRejectedValueOnce(axiosError);
+
+            const res = await client.getEnvironments();
+            expect(res.success).toBe(false);
+            expect(res.error).toContain('FQ-015: insufficient liquidity');
+        });
+    });
+
     describe('HTTP method allowlist on _apiCall', () => {
         beforeEach(() => {
             (axios.create as jest.Mock).mockReturnValue(mockedAxios);
