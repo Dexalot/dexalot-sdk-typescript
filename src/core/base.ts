@@ -992,29 +992,51 @@ export class BaseClient {
     }
 
     /**
-     * Get deployment configuration.
+     * Get deployment configuration from the REST API.
      * Cached for 1 hour (static data).
+     *
+     * Backward-compatible: no-args call still works and uses defaults
+     * (`env = config.parentEnv`, `contracttype = 'All'`, `returnabi = true`).
+     * The backend expects lowercase query param names (`contracttype`,
+     * `returnabi`), not the TS camelCase form on the opts object.
+     *
+     * The cache key includes all three resolved params so filter
+     * variants do not collide on the same static-cache slot.
      */
-    public async getDeployment(): Promise<Result<any>> {
-        return withInstanceCache(
+    public async getDeployment(opts?: {
+        env?: string;
+        contractType?:
+            | 'All'
+            | 'Portfolio'
+            | 'TradePairs'
+            | 'MainnetRFQ'
+            | 'PortfolioMain'
+            | 'PortfolioSub'
+            | 'OrderBooks'
+            | string;
+        returnAbi?: boolean;
+    }): Promise<Result<any[]>> {
+        const env = opts?.env ?? this.config.parentEnv;
+        const contracttype = opts?.contractType ?? 'All';
+        const returnabi = opts?.returnAbi ?? true;
+        const cachedFn = withInstanceCache(
             this,
             this._staticCache,
-            'getDeployment',
-            async () => {
-                // Ensure environments are fetched first (needed for providers)
-                if (Object.keys(this.chainConfig).length === 0) {
-                    const envsResult = await this.getEnvironments();
-                    if (!envsResult.success) {
-                        return Result.fail(`Failed to fetch environments: ${envsResult.error}`);
-                    }
+            `getDeployment|${env}|${contracttype}|${returnabi}`,
+            async (): Promise<Result<any[]>> => {
+                try {
+                    const data = await this._apiCall<any[]>(
+                        'get',
+                        ENDPOINTS.TRADING_DEPLOYMENT,
+                        { params: { env, contracttype, returnabi } }
+                    );
+                    return Result.ok(data);
+                } catch (e) {
+                    return Result.fail(this._sanitizeError(e, 'fetching deployment'));
                 }
-                
-                // Always fetch fresh from API (cache wrapper handles TTL)
-                await this._fetchDeployments();
-                
-                return Result.ok(this.deployments);
             }
-        )();
+        );
+        return cachedFn();
     }
 
     public getSubnetNetworkInfo(): { chainId: number; rpc: string; name: string } | null {

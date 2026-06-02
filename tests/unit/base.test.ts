@@ -550,15 +550,30 @@ describe('BaseClient', () => {
             });
         });
 
-        it('getDeployment should return internal deployments', async () => {
-             // Mock environments fetch (needed for getDeployment)
-             jest.spyOn(client, 'getEnvironments').mockResolvedValue(Result.ok([]));
-             jest.spyOn(client, '_fetchDeployments').mockResolvedValue();
-             
-             client.deployments = { 'Test': {} };
-             const result = await client.getDeployment();
-             expect(result.success).toBe(true);
-             expect(result.data).toEqual({ 'Test': {} });
+        it('getDeployment (no-args) calls the deployment REST endpoint with default filters', async () => {
+            // Backward-compat smoke: no-args call must still resolve successfully
+            // and return the REST payload via Result.ok. Defaults: env=parentEnv,
+            // contracttype=All, returnabi=true.
+            const apiSpy = jest
+                .spyOn(client, '_apiCall')
+                .mockResolvedValueOnce([{ env: 'fuji-multi', contracttype: 'All' }]);
+
+            const result = await client.getDeployment();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual([{ env: 'fuji-multi', contracttype: 'All' }]);
+            expect(apiSpy).toHaveBeenCalledTimes(1);
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.TRADING_DEPLOYMENT,
+                {
+                    params: {
+                        env: client.config.parentEnv,
+                        contracttype: 'All',
+                        returnabi: true,
+                    },
+                }
+            );
         });
     });
 
@@ -1741,24 +1756,121 @@ describe('BaseClient', () => {
         });
     });
 
-    describe('getDeployment', () => {
+    describe('getDeployment with filters', () => {
+        // The Dexalot REST deployment endpoint takes optional
+        // env / contracttype / returnabi filters. The SDK accepts them
+        // via opts and resolves defaults (env=parentEnv, contracttype=All,
+        // returnabi=true). Cache key includes all three so filter variants
+        // do not collide on the same static-cache slot.
         beforeEach(() => {
             (axios.create as jest.Mock).mockReturnValue(mockedAxios);
-            client = new BaseClient();
+            // Disable retry so sticky-mock retries cannot fold two distinct
+            // calls into a single _apiCall invocation in the cache-collision
+            // test.
+            client = new BaseClient(
+                createConfig({
+                    parentEnv: 'production-multi-avax',
+                    retryEnabled: false,
+                })
+            );
         });
 
-        it('should return error when environments are not available for deployment fetch', async () => {
-            // Clear chainConfig to trigger environments fetch requirement
-            client.chainConfig = {};
+        it('passes env, contractType, returnAbi as query params when provided', async () => {
+            const apiSpy = jest
+                .spyOn(client, '_apiCall')
+                .mockResolvedValueOnce([]);
 
-            // Mock getEnvironments to return failure
-            jest.spyOn(client, 'getEnvironments').mockResolvedValue(Result.fail('Environment fetch failed'));
+            const result = await client.getDeployment({
+                env: 'fuji-multi-avax',
+                contractType: 'Portfolio',
+                returnAbi: false,
+            });
 
-            const result = await client.getDeployment();
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual([]);
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.TRADING_DEPLOYMENT,
+                {
+                    params: {
+                        env: 'fuji-multi-avax',
+                        contracttype: 'Portfolio',
+                        returnabi: false,
+                    },
+                }
+            );
+        });
 
-            // Should return failure with descriptive error
+        it('defaults env to config.parentEnv, contractType to All, returnAbi to true', async () => {
+            const apiSpy = jest
+                .spyOn(client, '_apiCall')
+                .mockResolvedValueOnce([]);
+
+            await client.getDeployment();
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.TRADING_DEPLOYMENT,
+                {
+                    params: {
+                        env: 'production-multi-avax',
+                        contracttype: 'All',
+                        returnabi: true,
+                    },
+                }
+            );
+        });
+
+        it('uses defaults when partial opts are supplied (only env)', async () => {
+            const apiSpy = jest
+                .spyOn(client, '_apiCall')
+                .mockResolvedValueOnce([]);
+
+            await client.getDeployment({ env: 'fuji-multi-subnet' });
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.TRADING_DEPLOYMENT,
+                {
+                    params: {
+                        env: 'fuji-multi-subnet',
+                        contracttype: 'All',
+                        returnabi: true,
+                    },
+                }
+            );
+        });
+
+        it('uses distinct cache slots per filter combination', async () => {
+            const apiSpy = jest
+                .spyOn(client, '_apiCall')
+                .mockResolvedValue([]);
+
+            await client.getDeployment({ env: 'fuji-multi-avax' });
+            await client.getDeployment({ env: 'production-multi-avax' });
+
+            expect(apiSpy).toHaveBeenCalledTimes(2);
+        });
+
+        it('shares a cache slot for repeated identical calls', async () => {
+            const apiSpy = jest
+                .spyOn(client, '_apiCall')
+                .mockResolvedValue([]);
+
+            await client.getDeployment({ env: 'fuji-multi-avax' });
+            await client.getDeployment({ env: 'fuji-multi-avax' });
+
+            // Second call hits the static cache; _apiCall fires once.
+            expect(apiSpy).toHaveBeenCalledTimes(1);
+        });
+
+        it('returns Result.fail with a sanitized message on REST failure', async () => {
+            jest.spyOn(client, '_apiCall').mockRejectedValueOnce(new Error('boom'));
+
+            const result = await client.getDeployment({ env: 'fuji-multi-avax' });
+
             expect(result.success).toBe(false);
-            expect(result.error).toContain('Failed to fetch environments');
+            expect(result.error).toBeDefined();
         });
     });
 
