@@ -1209,4 +1209,91 @@ export class TransferClient extends SwapClient {
             const tx = await contract.approve(spender, 0n);
             await tx.wait();
         }
+
+        /**
+         * Coerce a single price value into a finite positive number. Returns
+         * `null` for anything we cannot confidently interpret as a price
+         * (non-string/non-number, empty string, NaN, ±Infinity, negative).
+         * The backend currently emits decimal strings (including scientific
+         * notation e.g. `"1.04662e-7"`), so `parseFloat` is the right primitive
+         * — but we tolerate plain numbers too in case the shape ever flips.
+         */
+        private _coerceUsdPrice(raw: unknown): number | null {
+            if (typeof raw === 'number') {
+                return Number.isFinite(raw) && raw >= 0 ? raw : null;
+            }
+            if (typeof raw !== 'string') return null;
+            const trimmed = raw.trim();
+            if (trimmed === '') return null;
+            const n = parseFloat(trimmed);
+            if (!Number.isFinite(n) || n < 0) return null;
+            return n;
+        }
+
+        /**
+         * Fetch current USD prices for every Dexalot-listed token. Public
+         * endpoint, no signed auth required. Cached for 15 minutes (semi-static
+         * tier).
+         *
+         * Returns a `Record<string, number>` map of token symbol → USD price.
+         * The backend currently emits the map shape directly as
+         * `Record<string, string>` (string prices, including scientific
+         * notation for very small values); we coerce to `number` and silently
+         * drop entries we cannot interpret. An array-of-objects fallback
+         * (`[{symbol, price}, ...]`) is also accepted in case the backend
+         * shape ever changes.
+         *
+         * The `env` query parameter is forwarded for parity with the Python
+         * SDK and to namespace the cache key per network; the backend itself
+         * currently determines the network from the API host and does not
+         * consult the parameter.
+         */
+        public async getTokenUsdPrices(env?: string): Promise<Result<Record<string, number>>> {
+            const targetEnv = env ?? this.config.parentEnv;
+            const cachedFn = withInstanceCache(
+                this,
+                this._semiStaticCache,
+                `getTokenUsdPrices|${targetEnv}`,
+                async (): Promise<Result<Record<string, number>>> => {
+                    try {
+                        const data = await this._apiCall<unknown>(
+                            'get',
+                            ENDPOINTS.INFO_USD_PRICES,
+                            { params: { env: targetEnv } }
+                        );
+                        const out: Record<string, number> = {};
+                        if (Array.isArray(data)) {
+                            // Forward-compat: array-of-objects shape.
+                            for (const row of data) {
+                                if (!row || typeof row !== 'object') continue;
+                                const r = row as Record<string, unknown>;
+                                const symbol = typeof r.symbol === 'string' ? r.symbol.trim() : '';
+                                if (!symbol) continue;
+                                const price = this._coerceUsdPrice(r.price);
+                                if (price === null) continue;
+                                out[symbol] = price;
+                            }
+                            return Result.ok(out);
+                        }
+                        if (data && typeof data === 'object') {
+                            // Current shape: flat `Record<string, string>` map.
+                            for (const [symbol, raw] of Object.entries(data as Record<string, unknown>)) {
+                                const trimmedSym = symbol.trim();
+                                if (!trimmedSym) continue;
+                                const price = this._coerceUsdPrice(raw);
+                                if (price === null) continue;
+                                out[trimmedSym] = price;
+                            }
+                            return Result.ok(out);
+                        }
+                        return Result.fail(
+                            `Unexpected USD prices response shape: expected object or array, got ${typeof data}.`
+                        );
+                    } catch (e) {
+                        return Result.fail(this._sanitizeError(e, 'fetching token USD prices'));
+                    }
+                }
+            );
+            return cachedFn();
+        }
 }

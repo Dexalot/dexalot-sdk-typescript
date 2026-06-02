@@ -3,7 +3,7 @@ import { TransferClient } from '../../src/core/transfer';
 import { Utils } from '../../src/utils';
 import { DexalotClient } from '../../src/core/client';
 import { ethers, Contract, MaxUint256 } from 'ethers';
-import { ENV, DEFAULTS } from '../../src/constants';
+import { ENV, DEFAULTS, ENDPOINTS } from '../../src/constants';
 
 // Mock everything
 jest.mock('ethers');
@@ -210,6 +210,216 @@ describe('TransferClient', () => {
             const result = await client.getTokenDetails('AVAX');
             expect(result.success).toBe(false);
             expect(result.error).toBeDefined();
+        });
+    });
+
+    describe('getTokenUsdPrices', () => {
+        // Backend currently returns a flat `Record<string, string>` map of
+        // token symbol → numeric price. The SDK normalizes to `Record<string,
+        // number>` and silently drops malformed entries (missing symbol /
+        // non-numeric / non-finite). Cache key is namespaced by `env` so
+        // testnet and mainnet clients never collide on the same slot.
+        beforeEach(() => {
+            // Disable retry so a single rejection from the spy doesn't
+            // get retried and folded into the rate-limited fetch path.
+            client.config.retryEnabled = false;
+        });
+
+        it('returns token-symbol → USD-price map from the public endpoint', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({
+                    ALOT: '0.0411',
+                    AVAX: '8.6811',
+                    USDC: '0.9996',
+                });
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual({
+                ALOT: 0.0411,
+                AVAX: 8.6811,
+                USDC: 0.9996,
+            });
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.INFO_USD_PRICES,
+                { params: { env: client.config.parentEnv } }
+            );
+        });
+
+        it('defaults env to config.parentEnv when not provided', async () => {
+            client.config.parentEnv = 'fuji-multi-avax';
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({ ALOT: '0.04' });
+
+            await client.getTokenUsdPrices();
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.INFO_USD_PRICES,
+                { params: { env: 'fuji-multi-avax' } }
+            );
+        });
+
+        it('uses explicit env over config.parentEnv when provided', async () => {
+            client.config.parentEnv = 'fuji-multi-avax';
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({ ALOT: '0.04' });
+
+            await client.getTokenUsdPrices('production-multi-avax');
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.INFO_USD_PRICES,
+                { params: { env: 'production-multi-avax' } }
+            );
+        });
+
+        it('returns Result.fail when the API call rejects', async () => {
+            jest.spyOn(client as any, '_apiCall').mockRejectedValueOnce(
+                new Error('upstream down')
+            );
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(false);
+            expect(result.error).toBeDefined();
+        });
+
+        it('shares a cache slot for repeated identical calls within TTL', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValue({ ALOT: '0.04' });
+
+            await client.getTokenUsdPrices('fuji-multi-avax');
+            await client.getTokenUsdPrices('fuji-multi-avax');
+
+            // Second call hits the semi-static cache; _apiCall fires once.
+            expect(apiSpy).toHaveBeenCalledTimes(1);
+        });
+
+        it('uses distinct cache slots per env so testnet and mainnet do not collide', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValue({ ALOT: '0.04' });
+
+            await client.getTokenUsdPrices('fuji-multi-avax');
+            await client.getTokenUsdPrices('production-multi-avax');
+
+            expect(apiSpy).toHaveBeenCalledTimes(2);
+        });
+
+        it('normalizes array-of-objects shape to a map (forward-compat)', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                { symbol: 'ALOT', price: '0.0411' },
+                { symbol: 'AVAX', price: 8.6811 },
+            ]);
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual({ ALOT: 0.0411, AVAX: 8.6811 });
+        });
+
+        it('handles scientific-notation string prices', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                COQ: '1.04662e-7',
+            });
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(true);
+            expect(result.data!.COQ).toBeCloseTo(1.04662e-7, 12);
+        });
+
+        it('skips malformed entries silently (non-numeric / missing symbol / non-finite)', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                ALOT: '0.0411',
+                BROKEN: 'not-a-number',
+                EMPTY: '',
+                INF: 'Infinity',
+                NULLISH: null,
+                AVAX: '8.6811',
+            });
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual({ ALOT: 0.0411, AVAX: 8.6811 });
+        });
+
+        it('skips malformed array entries (missing symbol or non-numeric price)', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                { symbol: 'ALOT', price: '0.0411' },
+                { symbol: '', price: '1.0' }, // missing symbol
+                { price: '2.0' }, // no symbol field
+                { symbol: 'BAD', price: 'oops' }, // non-numeric price
+                { symbol: 'AVAX', price: '8.6811' },
+            ]);
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual({ ALOT: 0.0411, AVAX: 8.6811 });
+        });
+
+        it('returns Result.fail when the API response is neither object nor array', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce('unexpected');
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(false);
+            expect(result.error).toBeDefined();
+        });
+
+        it('skips numeric entries that are negative or non-finite', async () => {
+            // Exercises the `typeof raw === 'number'` branch of the price
+            // coercer with values that should be rejected (NaN, Infinity,
+            // negative). Plain JSON cannot carry NaN/Infinity, but the array
+            // shape can carry any JS number via the price field.
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                { symbol: 'ALOT', price: 0.04 },
+                { symbol: 'NEG', price: -1 },
+                { symbol: 'NAN', price: Number.NaN },
+                { symbol: 'INF', price: Number.POSITIVE_INFINITY },
+                { symbol: 'AVAX', price: 8.6811 },
+            ]);
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual({ ALOT: 0.04, AVAX: 8.6811 });
+        });
+
+        it('skips null and non-object rows in the array shape', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                null,
+                'not-an-object',
+                42,
+                { symbol: 'ALOT', price: '0.04' },
+            ]);
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual({ ALOT: 0.04 });
+        });
+
+        it('skips entries whose key is empty or whitespace in the map shape', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                '': '1.0',
+                '   ': '2.0',
+                ALOT: '0.04',
+            });
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual({ ALOT: 0.04 });
         });
     });
 

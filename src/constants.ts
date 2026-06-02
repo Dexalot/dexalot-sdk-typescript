@@ -53,6 +53,10 @@ export const ENDPOINTS = {
   // Public market-data tree (note: /api/ prefix, not /privapi/).
   TRADING_CANDLE_CHUNK: "/api/trading/candle-chunk",
   STATS_MARKET_SNAPSHOT: "/api/stats/market-snapshot",
+  // Public info tree (no auth, no `env` query at the backend — the host
+  // determines the network — but the SDK still forwards `env` for parity
+  // with the Python SDK and cache-key namespacing on the client).
+  INFO_USD_PRICES: "/api/info/usd-prices",
 } as const;
 
 // Default Values
