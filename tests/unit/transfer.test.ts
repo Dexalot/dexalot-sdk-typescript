@@ -423,6 +423,320 @@ describe('TransferClient', () => {
         });
     });
 
+    describe('getTokenPriceHistory / getTokenHourlyPriceHistory', () => {
+        // Backend returns `[{date: ISO-string, price: stringified-number}, ...]`
+        // sorted descending by date. The SDK normalizes to ascending
+        // unix-seconds + numeric `PricePoint[]`, tolerates alias keys
+        // (`ts`/`timestamp`/`time` → `timestamp`), coerces string→number
+        // prices, and drops malformed rows silently. Cache key is namespaced
+        // by path so daily and hourly never collide on the static-tier slot.
+        beforeEach(() => {
+            client.config.retryEnabled = false;
+        });
+
+        // Two ISO timestamps and their unix-second equivalents.
+        const D1_ISO = '2026-05-01T00:00:00.000Z';
+        const D2_ISO = '2026-05-02T00:00:00.000Z';
+        const D1_TS = Math.floor(Date.parse(D1_ISO) / 1000);
+        const D2_TS = Math.floor(Date.parse(D2_ISO) / 1000);
+
+        describe('getTokenPriceHistory (daily)', () => {
+            it('returns ascending-time PricePoint[] from descending API rows', async () => {
+                const apiSpy = jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValueOnce([
+                        { date: D2_ISO, price: '0.042' },
+                        { date: D1_ISO, price: '0.041' },
+                    ]);
+
+                const result = await client.getTokenPriceHistory('ALOT');
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([
+                    { timestamp: D1_TS, price: 0.041 },
+                    { timestamp: D2_TS, price: 0.042 },
+                ]);
+                expect(apiSpy).toHaveBeenCalledWith(
+                    'get',
+                    ENDPOINTS.INFO_PRICE_HISTORY,
+                    { params: { token: 'ALOT' } }
+                );
+            });
+
+            it('forwards from/to query params when supplied', async () => {
+                const apiSpy = jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValueOnce([]);
+
+                await client.getTokenPriceHistory('ALOT', { from: 100, to: 200 });
+
+                expect(apiSpy).toHaveBeenCalledWith(
+                    'get',
+                    ENDPOINTS.INFO_PRICE_HISTORY,
+                    { params: { token: 'ALOT', from: 100, to: 200 } }
+                );
+            });
+
+            it('filters rows outside [from, to] client-side (defense in depth)', async () => {
+                const D3_ISO = '2026-05-03T00:00:00.000Z';
+                const D3_TS = Math.floor(Date.parse(D3_ISO) / 1000);
+                jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValueOnce([
+                        { date: D3_ISO, price: '0.043' },
+                        { date: D2_ISO, price: '0.042' },
+                        { date: D1_ISO, price: '0.041' },
+                    ]);
+
+                const result = await client.getTokenPriceHistory('ALOT', {
+                    from: D2_TS,
+                    to: D3_TS,
+                });
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([
+                    { timestamp: D2_TS, price: 0.042 },
+                    { timestamp: D3_TS, price: 0.043 },
+                ]);
+            });
+
+            it('returns Result.fail when token is empty or non-string', async () => {
+                const r1 = await client.getTokenPriceHistory('');
+                expect(r1.success).toBe(false);
+                const r2 = await client.getTokenPriceHistory(null as any);
+                expect(r2.success).toBe(false);
+            });
+
+            it('returns empty array when the API returns an empty list', async () => {
+                jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValueOnce([]);
+
+                const result = await client.getTokenPriceHistory('NEWTOKEN');
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([]);
+            });
+
+            it('returns Result.fail when _apiCall rejects', async () => {
+                jest.spyOn(client as any, '_apiCall').mockRejectedValueOnce(
+                    new Error('upstream down')
+                );
+
+                const result = await client.getTokenPriceHistory('ALOT');
+
+                expect(result.success).toBe(false);
+                expect(result.error).toBeDefined();
+            });
+
+            it('shares a cache slot for repeated identical calls within TTL', async () => {
+                const apiSpy = jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValue([{ date: D1_ISO, price: '0.04' }]);
+
+                await client.getTokenPriceHistory('ALOT');
+                await client.getTokenPriceHistory('ALOT');
+
+                expect(apiSpy).toHaveBeenCalledTimes(1);
+            });
+
+            it('uses distinct cache slots per (token, from, to) tuple', async () => {
+                const apiSpy = jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValue([{ date: D1_ISO, price: '0.04' }]);
+
+                await client.getTokenPriceHistory('ALOT');
+                await client.getTokenPriceHistory('AVAX');
+                await client.getTokenPriceHistory('ALOT', { from: 1, to: 2 });
+                await client.getTokenPriceHistory('ALOT', { from: 3, to: 4 });
+
+                expect(apiSpy).toHaveBeenCalledTimes(4);
+            });
+
+            it('returns Result.fail when the API response is not an array', async () => {
+                jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValueOnce({ not: 'an array' });
+
+                const result = await client.getTokenPriceHistory('ALOT');
+
+                expect(result.success).toBe(false);
+                expect(result.error).toBeDefined();
+            });
+
+            it('accepts numeric `ts` / `timestamp` / `time` alias fields', async () => {
+                jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                    { ts: D1_TS, price: '0.041' },
+                    { timestamp: D2_TS, price: '0.042' },
+                    { time: D2_TS + 86400, price: '0.043' },
+                ]);
+
+                const result = await client.getTokenPriceHistory('ALOT');
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([
+                    { timestamp: D1_TS, price: 0.041 },
+                    { timestamp: D2_TS, price: 0.042 },
+                    { timestamp: D2_TS + 86400, price: 0.043 },
+                ]);
+            });
+
+            it('coerces millisecond timestamps to seconds', async () => {
+                const msNow = D1_TS * 1000;
+                jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                    { ts: msNow, price: '0.041' },
+                ]);
+
+                const result = await client.getTokenPriceHistory('ALOT');
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([{ timestamp: D1_TS, price: 0.041 }]);
+            });
+
+            it('accepts string-numeric `ts` alias and drops non-numeric/empty/non-string types', async () => {
+                // Covers the string-parsing branch of `_coerceTimestampSeconds`
+                // (string → Number()) plus the rejection branches: empty
+                // string, non-numeric string, and non-string-non-number types
+                // (boolean, object). Each malformed row falls through to
+                // `null` and is dropped silently.
+                jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                    { ts: String(D1_TS), price: '0.041' },     // string number → ok
+                    { ts: '   ', price: '0.5' },                // empty after trim → null
+                    { ts: 'nope', price: '0.5' },               // non-numeric string → null
+                    { ts: true, price: '0.5' },                 // boolean → null
+                    { ts: { v: 1 }, price: '0.5' },             // object → null
+                ]);
+
+                const result = await client.getTokenPriceHistory('ALOT');
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([{ timestamp: D1_TS, price: 0.041 }]);
+            });
+
+            it('accepts numeric prices (forward-compat with non-string shape)', async () => {
+                jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                    { date: D1_ISO, price: 0.041 },
+                ]);
+
+                const result = await client.getTokenPriceHistory('ALOT');
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([{ timestamp: D1_TS, price: 0.041 }]);
+            });
+
+            it('silently drops malformed rows (non-object, missing fields, bad ts, bad price)', async () => {
+                jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                    null,
+                    'not-an-object',
+                    42,
+                    { date: D1_ISO, price: '0.041' },
+                    { date: 'not-a-date', price: '0.5' },     // unparseable ts
+                    { price: '0.5' },                          // missing ts
+                    { date: D2_ISO },                          // missing price
+                    { date: D2_ISO, price: 'oops' },           // non-numeric price
+                    { date: D2_ISO, price: '' },               // empty string price
+                    { date: D2_ISO, price: '   ' },            // whitespace-only price
+                    { date: D2_ISO, price: -1 },               // negative
+                    { date: D2_ISO, price: Number.NaN },       // NaN
+                    { date: D2_ISO, price: Number.POSITIVE_INFINITY },
+                    { date: D2_ISO, price: true },             // boolean price
+                ]);
+
+                const result = await client.getTokenPriceHistory('ALOT');
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([{ timestamp: D1_TS, price: 0.041 }]);
+            });
+        });
+
+        describe('getTokenHourlyPriceHistory', () => {
+            it('hits the hourly endpoint and returns normalized PricePoint[]', async () => {
+                const apiSpy = jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValueOnce([
+                        { date: D2_ISO, price: '0.042' },
+                        { date: D1_ISO, price: '0.041' },
+                    ]);
+
+                const result = await client.getTokenHourlyPriceHistory('ALOT');
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([
+                    { timestamp: D1_TS, price: 0.041 },
+                    { timestamp: D2_TS, price: 0.042 },
+                ]);
+                expect(apiSpy).toHaveBeenCalledWith(
+                    'get',
+                    ENDPOINTS.INFO_HOURLY_PRICE_HISTORY,
+                    { params: { token: 'ALOT' } }
+                );
+            });
+
+            it('returns Result.fail when _apiCall rejects', async () => {
+                jest.spyOn(client as any, '_apiCall').mockRejectedValueOnce(
+                    new Error('boom')
+                );
+
+                const result = await client.getTokenHourlyPriceHistory('ALOT');
+
+                expect(result.success).toBe(false);
+                expect(result.error).toBeDefined();
+            });
+
+            it('returns Result.fail when token is invalid', async () => {
+                const r = await client.getTokenHourlyPriceHistory('');
+                expect(r.success).toBe(false);
+            });
+
+            it('returns empty array when the API returns an empty list', async () => {
+                jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValueOnce([]);
+
+                const result = await client.getTokenHourlyPriceHistory('ALOT');
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([]);
+            });
+
+            it('shares a cache slot per identical call within TTL', async () => {
+                const apiSpy = jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValue([{ date: D1_ISO, price: '0.04' }]);
+
+                await client.getTokenHourlyPriceHistory('ALOT');
+                await client.getTokenHourlyPriceHistory('ALOT');
+
+                expect(apiSpy).toHaveBeenCalledTimes(1);
+            });
+
+            it('uses a distinct cache slot from getTokenPriceHistory (path-namespaced)', async () => {
+                const apiSpy = jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValue([{ date: D1_ISO, price: '0.04' }]);
+
+                await client.getTokenPriceHistory('ALOT');
+                await client.getTokenHourlyPriceHistory('ALOT');
+
+                // Daily and hourly do NOT share a cache slot even with the
+                // same token + opts — the cache key includes the REST path.
+                expect(apiSpy).toHaveBeenCalledTimes(2);
+                expect(apiSpy).toHaveBeenNthCalledWith(
+                    1,
+                    'get',
+                    ENDPOINTS.INFO_PRICE_HISTORY,
+                    { params: { token: 'ALOT' } }
+                );
+                expect(apiSpy).toHaveBeenNthCalledWith(
+                    2,
+                    'get',
+                    ENDPOINTS.INFO_HOURLY_PRICE_HISTORY,
+                    { params: { token: 'ALOT' } }
+                );
+            });
+        });
+    });
+
     describe('deposit', () => {
         it('should handle Native deposit (AVAX)', async () => {
             const result = await client.deposit('AVAX', 10, 'Avalanche');

@@ -57,6 +57,14 @@ export const ENDPOINTS = {
   // determines the network — but the SDK still forwards `env` for parity
   // with the Python SDK and cache-key namespacing on the client).
   INFO_USD_PRICES: "/api/info/usd-prices",
+  // Daily and hourly USD price history per token. Backend ignores
+  // `from`/`to`/`env` query params today (host determines network, range
+  // is fixed window) but the SDK forwards them for parity with the Python
+  // SDK and cache-key namespacing; if a caller supplies `from`/`to` we
+  // additionally filter the response client-side so the contract remains
+  // useful when the backend gains range support.
+  INFO_PRICE_HISTORY: "/api/info/token-usd-price-history",
+  INFO_HOURLY_PRICE_HISTORY: "/api/info/token-usd-price-history-hourly",
 } as const;
 
 // Default Values

@@ -71,6 +71,22 @@ export interface OrderBookEntry {
 }
 
 /**
+ * Single USD price observation in a price-history series.
+ *
+ * Returned by `getTokenPriceHistory` (daily) and
+ * `getTokenHourlyPriceHistory` (hourly). The backend's raw shape
+ * (`{ date: ISO-string, price: stringified-number }`, descending by
+ * date) is normalized to ascending unix-seconds + numeric price so
+ * callers can chart, filter, or interpolate without re-parsing.
+ */
+export interface PricePoint {
+    /** Observation time as unix seconds (UTC). */
+    timestamp: number;
+    /** USD price at the observation. */
+    price: number;
+}
+
+/**
  * OHLCV row returned by `getCandles` and embedded in `MarketSnapshot.market_snapshot`.
  * Numeric fields arrive as strings from the backend so callers can decide whether
  * to keep precision (`Big`/`string`) or convert to `number`.

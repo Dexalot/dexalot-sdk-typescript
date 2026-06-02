@@ -1,5 +1,5 @@
 import { ethers, Contract, TransactionResponse, MaxUint256, Provider } from 'ethers';
-import { TokenBalance, TokenInfo } from '../types/index.js';
+import { TokenBalance, TokenInfo, PricePoint } from '../types/index.js';
 import { ACCESS_ID, ICM_CHAINS, DEFAULTS, ENDPOINTS } from '../constants.js';
 import { Utils } from '../utils/index.js';
 import { toWei } from '../utils/decimal.js';
@@ -12,6 +12,11 @@ import {
     validateAddress,
     validateChainIdentifier
 } from '../utils/inputValidators.js';
+
+// Re-export PricePoint so consumers importing from `dexalot-sdk/internal`
+// (which re-exports `core/transfer`) see the type alongside the methods
+// that return it. The canonical declaration lives in `src/types/index.ts`.
+export type { PricePoint } from '../types/index.js';
 
 const PORTFOLIO_BRIDGE_ABI = [
     "function getBridgeFee(uint8 _bridge, uint32 _dstChainListOrgChainId, bytes32, uint256, address, bytes1) view returns (uint256)",
@@ -1295,5 +1300,176 @@ export class TransferClient extends SwapClient {
                 }
             );
             return cachedFn();
+        }
+
+        /**
+         * Coerce a raw timestamp value (number or numeric string) into unix
+         * seconds. Heuristic: anything ≥ 1e12 is treated as milliseconds and
+         * divided by 1000 (a 32-bit second-precision unix epoch maxes out at
+         * `2^31 ≈ 2.1e9`, so 1e12 is a safe boundary that catches both
+         * `Date.now()` and 13-digit string forms). Returns `null` if the
+         * input cannot be parsed as a finite non-negative integer.
+         */
+        private _coerceTimestampSeconds(raw: unknown): number | null {
+            let n: number;
+            if (typeof raw === 'number') {
+                n = raw;
+            } else if (typeof raw === 'string') {
+                const trimmed = raw.trim();
+                if (trimmed === '') return null;
+                n = Number(trimmed);
+            } else {
+                return null;
+            }
+            if (!Number.isFinite(n) || n < 0) return null;
+            if (n >= 1e12) n = Math.floor(n / 1000);
+            return Math.floor(n);
+        }
+
+        /**
+         * Coerce a raw price value into a finite non-negative number. Mirrors
+         * `_coerceUsdPrice` above but exposed as a separate helper so future
+         * tightening of the price-history shape (e.g. requiring strictly
+         * positive prices) is local to one branch.
+         */
+        private _coerceHistoryPrice(raw: unknown): number | null {
+            if (typeof raw === 'number') {
+                return Number.isFinite(raw) && raw >= 0 ? raw : null;
+            }
+            if (typeof raw !== 'string') return null;
+            const trimmed = raw.trim();
+            if (trimmed === '') return null;
+            const n = parseFloat(trimmed);
+            if (!Number.isFinite(n) || n < 0) return null;
+            return n;
+        }
+
+        /**
+         * Pull a timestamp out of a raw row. The backend currently emits
+         * `date` as an ISO-8601 string; we additionally accept `ts`,
+         * `timestamp`, and `time` (numeric or numeric-string) so the contract
+         * is stable if the shape ever flips. Returns unix seconds (UTC), or
+         * `null` if no recognised field parses.
+         */
+        private _extractHistoryTimestamp(row: Record<string, unknown>): number | null {
+            // ISO-string `date` first, matching the current backend shape.
+            const rawDate = row.date;
+            if (typeof rawDate === 'string' && rawDate.trim() !== '') {
+                const parsed = Date.parse(rawDate);
+                if (Number.isFinite(parsed)) {
+                    return Math.floor(parsed / 1000);
+                }
+            }
+            // Numeric aliases — try each in turn.
+            for (const key of ['ts', 'timestamp', 'time'] as const) {
+                if (key in row) {
+                    const coerced = this._coerceTimestampSeconds(row[key]);
+                    if (coerced !== null) return coerced;
+                }
+            }
+            return null;
+        }
+
+        /**
+         * Shared implementation for daily / hourly USD price history. Public
+         * methods only vary in the REST endpoint constant they pass here, so
+         * the cache key, normalization, sort order, and client-side
+         * `[from, to]` filter are guaranteed to behave identically across
+         * both surfaces.
+         *
+         * Cache: static tier (1h TTL) — past prices don't change. Cache key
+         * includes `path` so daily and hourly never collide on the same slot
+         * even with identical `(token, from, to)` tuples.
+         */
+        private async _fetchPriceHistory(
+            path: string,
+            token: string,
+            opts?: { from?: number; to?: number }
+        ): Promise<Result<PricePoint[]>> {
+            const tokenResult = validateTokenSymbol(token, 'token');
+            if (!tokenResult.success) {
+                return Result.fail(tokenResult.error!);
+            }
+            const sym = this.normalizeToken(token);
+            const from = opts?.from;
+            const to = opts?.to;
+            const cachedFn = withInstanceCache(
+                this,
+                this._staticCache,
+                `priceHistory|${path}|${sym}|${from ?? ''}|${to ?? ''}`,
+                async (): Promise<Result<PricePoint[]>> => {
+                    try {
+                        const params: Record<string, string | number> = { token: sym };
+                        if (from !== undefined) params.from = from;
+                        if (to !== undefined) params.to = to;
+                        const data = await this._apiCall<unknown>(
+                            'get',
+                            path,
+                            { params }
+                        );
+                        if (!Array.isArray(data)) {
+                            return Result.fail(
+                                `Unexpected price history response shape: expected array, got ${typeof data}.`
+                            );
+                        }
+                        const points: PricePoint[] = [];
+                        for (const row of data) {
+                            if (!row || typeof row !== 'object') continue;
+                            const r = row as Record<string, unknown>;
+                            const ts = this._extractHistoryTimestamp(r);
+                            if (ts === null) continue;
+                            const price = this._coerceHistoryPrice(r.price);
+                            if (price === null) continue;
+                            if (from !== undefined && ts < from) continue;
+                            if (to !== undefined && ts > to) continue;
+                            points.push({ timestamp: ts, price });
+                        }
+                        points.sort((a, b) => a.timestamp - b.timestamp);
+                        return Result.ok(points);
+                    } catch (e) {
+                        return Result.fail(this._sanitizeError(e, 'fetching token price history'));
+                    }
+                }
+            );
+            return cachedFn();
+        }
+
+        /**
+         * Daily USD price history for one token. Returns an ascending-time
+         * ordered `PricePoint[]` from the public `token-usd-price-history`
+         * endpoint. Past prices don't change, so results are cached in the
+         * static tier (1h TTL); the cache key is path-namespaced so daily
+         * and hourly never collide.
+         *
+         * The optional `from`/`to` window is in unix seconds. The backend
+         * currently ignores it (the host fixes the network and the
+         * lookback) but the SDK forwards both for forward-compat and
+         * additionally filters the returned series client-side so the
+         * caller's range contract holds regardless of backend behavior.
+         *
+         * No authentication required (public endpoint).
+         */
+        public async getTokenPriceHistory(
+            token: string,
+            opts?: { from?: number; to?: number }
+        ): Promise<Result<PricePoint[]>> {
+            return this._fetchPriceHistory(ENDPOINTS.INFO_PRICE_HISTORY, token, opts);
+        }
+
+        /**
+         * Hourly USD price history for one token. Same contract as
+         * `getTokenPriceHistory` (ascending-time `PricePoint[]`, static-tier
+         * 1h cache, optional `from`/`to` window applied client-side) but
+         * routes through the hourly endpoint. Useful when a more granular
+         * series is needed than the daily variant — backend currently
+         * returns the trailing ~24h at 3-hour granularity.
+         *
+         * No authentication required (public endpoint).
+         */
+        public async getTokenHourlyPriceHistory(
+            token: string,
+            opts?: { from?: number; to?: number }
+        ): Promise<Result<PricePoint[]>> {
+            return this._fetchPriceHistory(ENDPOINTS.INFO_HOURLY_PRICE_HISTORY, token, opts);
         }
 }
