@@ -136,9 +136,12 @@ export interface MarketSnapshot {
  *
  * The SDK normalises to camelCase, lifts the numeric enums to
  * human-readable strings, and keeps `quantity`/`fee` as `number`
- * (parsed from the Big-string) and `nonce` as `number`. Raw fields
- * are dropped — callers should never need to look at the original
- * snake_case keys.
+ * (parsed from the Big-string) and `nonce` as `number`. The
+ * `source_ts` / `target_ts` legs (emitted by the backend as ISO-8601
+ * strings) are coerced to unix **seconds** (UTC) numbers — `sourceTs`
+ * is always present (`0` when missing) and `targetTs` is `null` when
+ * there is no target leg. Raw fields are dropped — callers should
+ * never need to look at the original snake_case keys.
  */
 export type TransferStatus = 'COMPLETED' | 'INFLIGHT' | 'DELAYED';
 
@@ -181,16 +184,16 @@ export interface Transfer {
     sourceChainId: number;
     /** Source-leg tx hash. */
     sourceTx: string;
-    /** Source-leg ISO-8601 timestamp string (as emitted by the backend). */
-    sourceTs: string;
+    /** Source-leg time as unix seconds (UTC). */
+    sourceTs: number;
     /** Target environment label, or null for transfers that never cross. */
     targetEnv: string | null;
     /** Target chain id, or null for transfers that never cross. */
     targetChainId: number | null;
     /** Target-leg tx hash, or null when no target leg exists. */
     targetTx: string | null;
-    /** Target-leg ISO-8601 timestamp string, or null when no target leg exists. */
-    targetTs: string | null;
+    /** Target-leg time as unix seconds (UTC), or null when no target leg exists. */
+    targetTs: number | null;
 }
 
 export interface OrderBook {

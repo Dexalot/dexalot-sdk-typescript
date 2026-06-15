@@ -1191,16 +1191,20 @@ export class CLOBClient extends BaseClient {
                 );
             }
 
+            let pair: string | undefined;
             if (opts?.pair) {
                 const pairResult = validatePairFormat(opts.pair, 'pair');
                 if (!pairResult.success) {
                     return Result.fail(pairResult.error!);
                 }
+                // Forward the canonical pair (casing variants and known
+                // aliases collapse) so the outgoing params.pair matches the
+                // backend's canonical symbol — not the raw caller input.
+                pair = this.normalizePair(opts.pair);
             }
 
             const limit = opts?.limit ?? 100;
             const offset = opts?.offset ?? 0;
-            const pair = opts?.pair;
             const status = opts?.status;
 
             const cacheArgs = JSON.stringify({ pair, status, limit, offset });

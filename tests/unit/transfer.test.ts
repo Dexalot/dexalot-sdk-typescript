@@ -2303,11 +2303,11 @@ describe('TransferClient', () => {
                     sourceEnv: 'production-multi-avax',
                     sourceChainId: 43114,
                     sourceTx: '0xsrc',
-                    sourceTs: '2026-05-01T00:00:00.000Z',
+                    sourceTs: 1777593600, // 2026-05-01T00:00:00.000Z as unix seconds
                     targetEnv: 'subnet',
                     targetChainId: 12345,
                     targetTx: '0xtgt',
-                    targetTs: '2026-05-01T00:01:00.000Z',
+                    targetTs: 1777593660, // 2026-05-01T00:01:00.000Z as unix seconds
                 },
                 {
                     actionType: 'ADD_GAS',
@@ -2322,13 +2322,24 @@ describe('TransferClient', () => {
                     sourceEnv: 'subnet',
                     sourceChainId: 12345,
                     sourceTx: '0xgas',
-                    sourceTs: '2026-05-02T00:00:00.000Z',
+                    sourceTs: 1777680000, // 2026-05-02T00:00:00.000Z as unix seconds
                     targetEnv: null,
                     targetChainId: null,
                     targetTx: null,
                     targetTs: null,
                 },
             ]);
+
+            // Timestamps are coerced to unix seconds (numbers, not ISO strings).
+            expect(typeof result.data![0].sourceTs).toBe('number');
+            expect(typeof result.data![0].targetTs).toBe('number');
+            // A row with no target leg yields targetTs === null alongside the
+            // other nullable target-* fields.
+            expect(typeof result.data![1].sourceTs).toBe('number');
+            expect(result.data![1].targetTs).toBeNull();
+            expect(result.data![1].targetEnv).toBeNull();
+            expect(result.data![1].targetChainId).toBeNull();
+            expect(result.data![1].targetTx).toBeNull();
 
             expect(apiSpy).toHaveBeenCalledWith(
                 'get',
@@ -2355,17 +2366,17 @@ describe('TransferClient', () => {
             expect(result.data![0].symbol).toBe('USDC');
         });
 
-        it('forwards symbol / periodfrom / periodto / itemsperpage / pageno query params', async () => {
+        it('translates limit/offset -> itemsperpage/pageno and fromTs/toTs -> periodfrom/periodto', async () => {
             const apiSpy = jest
                 .spyOn(client as any, '_apiCall')
                 .mockResolvedValueOnce({ count: 0, rows: [] });
 
             await client.getCombinedTransfers({
                 symbol: 'usdc', // lowercase to verify normalization
-                periodfrom: '2026-05-01T00:00:00.000Z',
-                periodto: '2026-05-31T00:00:00.000Z',
-                itemsperpage: 50,
-                pageno: 3,
+                fromTs: 1777593600, // 2026-05-01T00:00:00Z unix seconds
+                toTs: 1780185600, // 2026-05-31T00:00:00Z unix seconds
+                limit: 50,
+                offset: 100, // floor(100 / 50) + 1 = page 3
             });
 
             expect(apiSpy).toHaveBeenCalledWith(
@@ -2376,8 +2387,8 @@ describe('TransferClient', () => {
                         itemsperpage: 50,
                         pageno: 3,
                         symbol: 'USDC',
-                        periodfrom: '2026-05-01T00:00:00.000Z',
-                        periodto: '2026-05-31T00:00:00.000Z',
+                        periodfrom: 1777593600,
+                        periodto: 1780185600,
                     },
                 })
             );
@@ -2417,7 +2428,7 @@ describe('TransferClient', () => {
 
             await client.getCombinedTransfers();
             await client.getCombinedTransfers({ symbol: 'USDC' });
-            await client.getCombinedTransfers({ pageno: 2 });
+            await client.getCombinedTransfers({ offset: 100 }); // maps to a different page
 
             expect(apiSpy).toHaveBeenCalledTimes(3);
         });
@@ -2647,8 +2658,10 @@ describe('TransferClient', () => {
                         source_env: 5,
                         // source_chain_id missing → defaults to 0
                         // source_tx missing → defaults to ''
-                        // source_ts missing → defaults to ''
-                        // target_* fields wrong type → defaults to null
+                        // source_ts missing → coerces to 0 (non-null sentinel)
+                        // target_env / target_chain_id / target_tx wrong
+                        // type → default to null; target_ts is a bare number
+                        // → coerced to unix seconds (11)
                         target_env: 7,
                         target_chain_id: 'not-a-number',
                         target_tx: 9,
@@ -2674,12 +2687,55 @@ describe('TransferClient', () => {
                 sourceEnv: '',
                 sourceChainId: 0,
                 sourceTx: '',
-                sourceTs: '',
+                sourceTs: 0,
                 targetEnv: null,
                 targetChainId: null,
                 targetTx: null,
-                targetTs: null,
+                targetTs: 11,
             });
+        });
+
+        it('coerces source_ts/target_ts across ISO-string, numeric, and unparseable inputs', async () => {
+            // Exercises both branches of _coerceTransferTs:
+            //   - source_ts: numeric-string (non-ISO) → _coerceTimestampSeconds path
+            //   - target_ts: ISO-8601 string → Date.parse path
+            // and the missing/unparseable fallbacks on a second row.
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 3,
+                rows: [
+                    {
+                        ...ROW_DEPOSIT_COMPLETED,
+                        source_ts: '1777593600', // numeric string (seconds)
+                        target_ts: '2026-05-01T00:01:00.000Z', // ISO string
+                    },
+                    {
+                        ...ROW_GAS_INFLIGHT,
+                        source_ts: 'not-a-date', // unparseable string → 0 sentinel
+                        target_ts: null, // absent target leg → null
+                    },
+                    {
+                        ...ROW_GAS_INFLIGHT,
+                        source_ts: '   ', // whitespace-only string → 0 sentinel
+                        target_ts: 1777680000, // bare numeric (seconds)
+                    },
+                ],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            // Numeric-string seconds pass straight through.
+            expect(result.data![0].sourceTs).toBe(1777593600);
+            // ISO string is parsed to unix seconds.
+            expect(result.data![0].targetTs).toBe(1777593660);
+            // Unparseable source string falls back to the 0 sentinel.
+            expect(result.data![1].sourceTs).toBe(0);
+            // Null target leg stays null.
+            expect(result.data![1].targetTs).toBeNull();
+            // Whitespace-only string is treated as empty → 0 sentinel;
+            // bare numeric target_ts passes through _coerceTimestampSeconds.
+            expect(result.data![2].sourceTs).toBe(0);
+            expect(result.data![2].targetTs).toBe(1777680000);
         });
     });
 

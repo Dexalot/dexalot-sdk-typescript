@@ -1541,6 +1541,15 @@ export class TransferClient extends SwapClient {
             return n;
         }
 
+        /** ISO-8601 string OR numeric/numeric-string -> unix seconds (UTC), or null. */
+        private _coerceTransferTs(raw: unknown): number | null {
+            if (typeof raw === 'string' && raw.trim() !== '') {
+                const parsed = Date.parse(raw);
+                if (Number.isFinite(parsed)) return Math.floor(parsed / 1000);
+            }
+            return this._coerceTimestampSeconds(raw);
+        }
+
         /**
          * Normalize one raw `DBTransfer`-shaped row from the backend into
          * the canonical `Transfer` type. Returns `null` for any row that
@@ -1587,13 +1596,16 @@ export class TransferClient extends SwapClient {
             const sourceChainId =
                 typeof r.source_chain_id === 'number' ? r.source_chain_id : 0;
             const sourceTx = typeof r.source_tx === 'string' ? r.source_tx : '';
-            const sourceTs = typeof r.source_ts === 'string' ? r.source_ts : '';
+            // Source leg is always present; `0` keeps the field non-null
+            // when the timestamp is missing or unparseable.
+            const sourceTs = this._coerceTransferTs(r.source_ts) ?? 0;
 
             const targetEnv = typeof r.target_env === 'string' ? r.target_env : null;
             const targetChainId =
                 typeof r.target_chain_id === 'number' ? r.target_chain_id : null;
             const targetTx = typeof r.target_tx === 'string' ? r.target_tx : null;
-            const targetTs = typeof r.target_ts === 'string' ? r.target_ts : null;
+            // Null when there is no target leg yet (or no parseable time).
+            const targetTs = this._coerceTransferTs(r.target_ts);
 
             return {
                 actionType,
@@ -1639,13 +1651,28 @@ export class TransferClient extends SwapClient {
          * `fee`) are already display-decimal numbers; no
          * wei→human conversion is applied because the backend has
          * already done it.
+         *
+         * @param opts - Optional ergonomic filters:
+         *   - `symbol` — token symbol to filter by; canonicalized via
+         *     `normalizeToken` (casing variants and known aliases collapse).
+         *   - `fromTs` / `toTs` — inclusive time window as unix **seconds**.
+         *   - `limit` — page size (rows per page); defaults to 100.
+         *   - `offset` — number of rows to skip; defaults to 0.
+         *
+         * `limit`/`offset` translate to the backend's `itemsperpage` /
+         * `pageno` shape internally (`itemsperpage = max(1, limit)`,
+         * `pageno = floor(offset / itemsperpage) + 1`), and `fromTs`/`toTs`
+         * translate to `periodfrom` / `periodto`. The cache key is built
+         * from the translated values, so equivalent `limit`/`offset`
+         * combinations that map to the same page share a cache slot
+         * (matching the Python SDK).
          */
         public async getCombinedTransfers(opts?: {
             symbol?: string;
-            periodfrom?: string;
-            periodto?: string;
-            itemsperpage?: number;
-            pageno?: number;
+            fromTs?: number; // unix seconds
+            toTs?: number; // unix seconds
+            limit?: number;
+            offset?: number;
         }): Promise<Result<Transfer[]>> {
             if (!this.signer) {
                 return Result.fail('Signer not configured.');
@@ -1657,16 +1684,23 @@ export class TransferClient extends SwapClient {
                 return Result.fail(this._sanitizeError(e, 'resolving wallet address'));
             }
 
-            const itemsperpage = opts?.itemsperpage ?? 100;
-            const pageno = opts?.pageno ?? 1;
+            // Translate the ergonomic limit/offset/fromTs/toTs surface
+            // into the backend's itemsperpage/pageno/periodfrom/periodto
+            // query shape. `itemsperpage` is floored at 1 so a 0/negative
+            // limit never produces an invalid page size, and `pageno` is
+            // derived from the offset so equivalent limit/offset combos
+            // landing on the same page share a cache slot (matches Python).
+            const itemsperpage = Math.max(1, opts?.limit ?? 100);
+            const pageno = Math.floor((opts?.offset ?? 0) / itemsperpage) + 1;
             const symbol = opts?.symbol ? this.normalizeToken(opts.symbol) : undefined;
-            const periodfrom = opts?.periodfrom;
-            const periodto = opts?.periodto;
+            const periodfrom = opts?.fromTs;
+            const periodto = opts?.toTs;
 
             // Cache key is namespaced by resolved address so signer
             // swaps within a single client never collide on the same
-            // slot, and by the serialized opts so different filter
-            // combinations are distinct.
+            // slot, and by the TRANSLATED filter values so different
+            // backend-query combinations are distinct (and equivalent
+            // limit/offset pairs that map to the same page collapse).
             const cacheArgs = JSON.stringify({
                 itemsperpage,
                 pageno,

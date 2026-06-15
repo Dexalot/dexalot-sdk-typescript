@@ -875,6 +875,24 @@ describe('CLOBClient', () => {
             );
         });
 
+        it('normalizes a lowercase/alias pair in the outgoing params.pair', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({ count: 0, rows: [] });
+
+            // 'weth/usdc' lowercases to upper and the WETH alias collapses
+            // to canonical ETH → outgoing pair is 'ETH/USDC', not the raw input.
+            await client.getOrderHistory(undefined, { pair: 'weth/usdc' });
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.TRADING_SIGNED_ORDERS_HISTORY,
+                expect.objectContaining({
+                    params: expect.objectContaining({ pair: 'ETH/USDC' }),
+                })
+            );
+        });
+
         it('defaults to limit=100 and offset=0 when no opts supplied', async () => {
             const apiSpy = jest
                 .spyOn(client as any, '_apiCall')
