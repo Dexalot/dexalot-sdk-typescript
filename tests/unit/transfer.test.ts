@@ -2387,8 +2387,11 @@ describe('TransferClient', () => {
                         itemsperpage: 50,
                         pageno: 3,
                         symbol: 'USDC',
-                        periodfrom: 1777593600,
-                        periodto: 1780185600,
+                        // fromTs/toTs (unix seconds) are converted to ISO-8601
+                        // strings — the backend's periodfrom/periodto reject raw
+                        // unix integers with "ISO Date format problem".
+                        periodfrom: new Date(1777593600 * 1000).toISOString(),
+                        periodto: new Date(1780185600 * 1000).toISOString(),
                     },
                 })
             );

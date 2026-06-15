@@ -1693,8 +1693,15 @@ export class TransferClient extends SwapClient {
             const itemsperpage = Math.max(1, opts?.limit ?? 100);
             const pageno = Math.floor((opts?.offset ?? 0) / itemsperpage) + 1;
             const symbol = opts?.symbol ? this.normalizeToken(opts.symbol) : undefined;
-            const periodfrom = opts?.fromTs;
-            const periodto = opts?.toTs;
+            // The backend's periodfrom/periodto expect ISO-8601 date strings,
+            // not unix seconds — forwarding the raw fromTs/toTs integers makes
+            // the endpoint reject the request ("Malformed Request! ISO Date
+            // format problem"). Convert the ergonomic unix-seconds inputs to
+            // ISO-8601 here.
+            const periodfrom =
+                opts?.fromTs !== undefined ? new Date(opts.fromTs * 1000).toISOString() : undefined;
+            const periodto =
+                opts?.toTs !== undefined ? new Date(opts.toTs * 1000).toISOString() : undefined;
 
             // Cache key is namespaced by resolved address so signer
             // swaps within a single client never collide on the same
