@@ -1,0 +1,12 @@
+# osv-scanner ignore list.
+#
+# osv-scanner exits non-zero on ANY advisory regardless of severity, so a single
+# unfixable dev-only transitive would block CI and the tag-driven release.
+# Entries here are restricted to advisories that (a) affect dev/test tooling
+# only, (b) are not present in the published package, and (c) have no
+# non-breaking patch path. Keep this minimal; revisit when the upstream chain
+# moves.
+
+[[IgnoredVulns]]
+id = "GHSA-h67p-54hq-rp68"
+reason = "js-yaml 3.14.2 (CVSS 5.3, quadratic-complexity DoS in merge keys) is pulled only by @istanbuljs/load-nyc-config inside jest's coverage tooling — dev-only, never shipped in the published @dexalot/dexalot-sdk package. The only patched js-yaml is >=4.2.0, whose breaking 3.x->4.x API change @istanbuljs/load-nyc-config cannot consume, so there is no non-breaking override. npm/pnpm audit --audit-level=high does not gate on it."
