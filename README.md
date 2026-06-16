@@ -208,6 +208,21 @@ if (result.success) {
 }
 ```
 
+### Order history
+
+```typescript
+const result = await client.getOrderHistory(undefined, {
+    pair: "ALOT/USDC",
+    status: "FILLED",
+    limit: 50,
+});
+if (result.success) {
+    for (const order of result.data) {
+        console.log(`${order.pair} ${order.side} ${order.quantity} @ ${order.price}`);
+    }
+}
+```
+
 ## Dependencies
 
 - `ethers>=6.0.0`: Multi-chain blockchain interactions
@@ -343,12 +358,15 @@ client.invalidateCache('balance'); // Options: 'static', 'semi_static', 'balance
 **Static Data (1 hour):**
 - `getEnvironments()`
 - `getChains()`
-- `getDeployment()`
+- `getDeployment()` (also caches per `{env, contractType, returnAbi}` filter combination)
+- `getTokenPriceHistory(token, opts)`
+- `getTokenHourlyPriceHistory(token, opts)`
 
 **Semi-Static Data (15 minutes):**
 - `getTokens()`
 - `getClobPairs()`
 - `getSwapPairs(chainId)`
+- `getTokenUsdPrices(env?)`
 
 **Balance Data (10 seconds):**
 - `getPortfolioBalance(token, address?)`
@@ -356,6 +374,18 @@ client.invalidateCache('balance'); // Options: 'static', 'semi_static', 'balance
 - `getChainWalletBalance(chain, token, address?)`
 - `getChainWalletBalances(chain, address?)`
 - `getAllChainWalletBalances(address?)`
+- `getOrderHistory(account?, opts?)`
+- `getCombinedTransfers(opts?)` — `opts`: `{ symbol?, fromTs?, toTs?, limit?, offset? }`
+
+  | Param | Type | Description |
+  |---|---|---|
+  | `symbol` | `string` | Token symbol filter; canonicalized via `normalizeToken` (casing + aliases collapse). |
+  | `fromTs` | `number` | Inclusive window start, unix **seconds**. Sent to the backend as `periodfrom`. |
+  | `toTs` | `number` | Inclusive window end, unix **seconds**. Sent to the backend as `periodto`. |
+  | `limit` | `number` | Page size (default `100`). Translates to `itemsperpage = max(1, limit)`. |
+  | `offset` | `number` | Rows to skip (default `0`). Translates to `pageno = floor(offset / itemsperpage) + 1`. |
+
+  `limit`/`offset` translate to the backend's `itemsperpage`/`pageno` paging and `fromTs`/`toTs` to `periodfrom`/`periodto` internally; the cache key is built from the translated values, so equivalent `limit`/`offset` combos that land on the same page share a cache slot.
 
 **Orderbook Data (1 second):**
 - `getOrderBook(pair)`
@@ -807,6 +837,17 @@ Error messages are automatically sanitized to prevent information leakage:
 - Stack traces are removed
 - User-friendly messages are provided
 
+### Backend reason codes
+
+Errors from the Dexalot REST API now include structured `reasonCode` (e.g. `FQ-015`, `P-AFNE-02`, `T-TMDQ-01`, `RF-IMV-01`) and human `reason` fields. These are preserved verbatim in thrown errors and `Result.fail()` messages — you'll see `"FQ-015: insufficient liquidity"` rather than the generic `"Request failed with status code 400"`. Catch and pattern-match on the code prefix to react programmatically:
+
+```typescript
+const result = await client.getSwapFirmQuote('USDC', 'AVAX', 100);
+if (!result.success && result.error.startsWith('FQ-')) {
+    // RFQ backend rejected the quote — see the reasonCode for why
+}
+```
+
 ### Best Practices
 
 1. **Always check `result.success`** before accessing `result.data`
@@ -996,6 +1037,19 @@ Orders are normalized into one canonical SDK shape across REST and contract orde
 
 **Deployment API:**
 - `env`, `address`, `abi` (handles variations like `Env`, `Address`, `Abi`)
+
+**Price History API (`getTokenPriceHistory`, `getTokenHourlyPriceHistory`):**
+- `timestamp` (from `date` ISO-8601, `ts`, `timestamp`, `time` — ms auto-detected by magnitude and divided to seconds)
+- `price` (from string decimal, coerced to number; scientific notation supported)
+
+**Combined Transfers API (`getCombinedTransfers`):**
+- The canonical `Transfer` shape exposes camelCase fields normalized from the backend's snake_case `DBTransfer`: `actionType`, `status`, `symbol`, `quantity`, `fee`, `traderAddress`, `bridge`, `bridgeUrl`, `nonce`, `sourceEnv`, `sourceChainId`, `sourceTx`, `sourceTs`, `targetEnv`, `targetChainId`, `targetTx`, `targetTs`.
+- Numeric enums are mapped to string labels: `status` (`COMPLETED`/`INFLIGHT`/`DELAYED`), `actionType` (10 labels including `WITHDRAWN`/`DEPOSITED`/`SENT`/`RECEIVED`/`RECOVERED`/`ADD_GAS`/`REMOVE_GAS`/`AUTO_FILL`/`WITHDRAW_PENDING`/`DEPOSIT_PENDING`), `bridge` (`NATIVE`/`LAYER0`/`CELER`/`ICM`).
+- Quantity and fee arrive as display-decimal Big-strings — no wei→human decode needed (parsed via `Number()`).
+- Timestamps are normalized to unix **seconds** (UTC) **numbers** (the backend emits ISO-8601 strings, which are coerced via `Date.parse`): `sourceTs` is always present (`0` sentinel when missing), and `targetTs` is `null` when there is no target leg. The other target fields (`targetEnv`, `targetChainId`, `targetTx`) are likewise `null` for transfers that never cross.
+
+**Order History API (`getOrderHistory`):**
+- Same canonical `Order` shape and aliases as `getOpenOrders` — see the "Canonical Order Model" section above.
 
 ### Benefits
 

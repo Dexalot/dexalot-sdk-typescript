@@ -47,12 +47,41 @@ export const ENDPOINTS = {
   TRADING_TOKENS: "/privapi/trading/tokens",
   TRADING_DEPLOYMENT: "/privapi/trading/deployment",
   SIGNED_ORDERS: "/privapi/signed/orders",
+  // Paginated per-account order history (any status) under the
+  // `/api/trading/signed/` mountpoint. Requires the `x-signature` header.
+  // Distinct from `SIGNED_ORDERS` above — `/privapi/signed/orders` returns
+  // the currently-open orders for the connected wallet (used by
+  // `getOpenOrders`), while `/api/trading/signed/orders` returns the
+  // full historical order list (any status, paginated, supports
+  // pair/status/limit/offset filters and an explicit `traderaddress`).
+  // The trade-kit's `clob_get_orders_by_account` tool hits this path via
+  // its `signedGet("orders", ...)` helper which mounts at
+  // `${baseUrl}/trading/signed/<path>`.
+  TRADING_SIGNED_ORDERS_HISTORY: "/api/trading/signed/orders",
+  // Unified transfer history (deposits + withdrawals + p2p + gas) under the
+  // `/api/trading/signed/` mountpoint. Requires the `x-signature` header.
+  // The backend route does not exist under `/privapi/...` — confirmed
+  // empirically (404 on /privapi/trading/signed/transferscombined,
+  // 204 OPTIONS on /api/trading/signed/transferscombined).
+  TRADING_COMBINED_TRANSFERS: "/api/trading/signed/transferscombined",
   RFQ_PAIRS: "/api/rfq/pairs",
   RFQ_FIRM_QUOTE: "/api/rfq/firmQuote",
   RFQ_PAIR_PRICE: "/api/rfq/pairprice",
   // Public market-data tree (note: /api/ prefix, not /privapi/).
   TRADING_CANDLE_CHUNK: "/api/trading/candle-chunk",
   STATS_MARKET_SNAPSHOT: "/api/stats/market-snapshot",
+  // Public info tree (no auth, no `env` query at the backend — the host
+  // determines the network — but the SDK still forwards `env` for parity
+  // with the Python SDK and cache-key namespacing on the client).
+  INFO_USD_PRICES: "/api/info/usd-prices",
+  // Daily and hourly USD price history per token. Backend ignores
+  // `from`/`to`/`env` query params today (host determines network, range
+  // is fixed window) but the SDK forwards them for parity with the Python
+  // SDK and cache-key namespacing; if a caller supplies `from`/`to` we
+  // additionally filter the response client-side so the contract remains
+  // useful when the backend gains range support.
+  INFO_PRICE_HISTORY: "/api/info/token-usd-price-history",
+  INFO_HOURLY_PRICE_HISTORY: "/api/info/token-usd-price-history-hourly",
 } as const;
 
 // Default Values

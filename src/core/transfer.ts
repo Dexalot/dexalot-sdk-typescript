@@ -1,5 +1,13 @@
 import { ethers, Contract, TransactionResponse, MaxUint256, Provider } from 'ethers';
-import { TokenBalance, TokenInfo } from '../types/index.js';
+import {
+    TokenBalance,
+    TokenInfo,
+    PricePoint,
+    Transfer,
+    TransferActionType,
+    TransferBridge,
+    TransferStatus,
+} from '../types/index.js';
 import { ACCESS_ID, ICM_CHAINS, DEFAULTS, ENDPOINTS } from '../constants.js';
 import { Utils } from '../utils/index.js';
 import { toWei } from '../utils/decimal.js';
@@ -12,6 +20,49 @@ import {
     validateAddress,
     validateChainIdentifier
 } from '../utils/inputValidators.js';
+
+// Re-export PricePoint / Transfer types so consumers importing from
+// `dexalot-sdk/internal` (which re-exports `core/transfer`) see them
+// alongside the methods that return them. The canonical declarations
+// live in `src/types/index.ts`.
+export type {
+    PricePoint,
+    Transfer,
+    TransferActionType,
+    TransferBridge,
+    TransferStatus,
+} from '../types/index.js';
+
+// Numeric enum → human-readable string lookup tables for the
+// `transferscombined` REST response. These mirror the
+// `TRANSFER_ACTION_TYPE` / `TRANSFER_STATUS` / `BRIDGES` enums that the
+// official Dexalot frontend uses to render the same rows; keeping them
+// in lockstep avoids drift if the backend ever adds new variants.
+const TRANSFER_ACTION_TYPE_LABELS: Record<number, TransferActionType> = {
+    0: 'WITHDRAWN',
+    1: 'DEPOSITED',
+    5: 'SENT',
+    6: 'RECEIVED',
+    7: 'RECOVERED',
+    8: 'ADD_GAS',
+    9: 'REMOVE_GAS',
+    10: 'AUTO_FILL',
+    11: 'WITHDRAW_PENDING',
+    12: 'DEPOSIT_PENDING',
+};
+
+const TRANSFER_STATUS_LABELS: Record<number, TransferStatus> = {
+    0: 'COMPLETED',
+    1: 'INFLIGHT',
+    2: 'DELAYED',
+};
+
+const TRANSFER_BRIDGE_LABELS: Record<number, TransferBridge> = {
+    [-1]: 'NATIVE',
+    0: 'LAYER0',
+    1: 'CELER',
+    2: 'ICM',
+};
 
 const PORTFOLIO_BRIDGE_ABI = [
     "function getBridgeFee(uint8 _bridge, uint32 _dstChainListOrgChainId, bytes32, uint256, address, bytes1) view returns (uint256)",
@@ -1208,5 +1259,509 @@ export class TransferClient extends SwapClient {
             const contract = new Contract(token, ERC20_ABI, signerToUse);
             const tx = await contract.approve(spender, 0n);
             await tx.wait();
+        }
+
+        /**
+         * Coerce a single price value into a finite positive number. Returns
+         * `null` for anything we cannot confidently interpret as a price
+         * (non-string/non-number, empty string, NaN, ±Infinity, negative).
+         * The backend currently emits decimal strings (including scientific
+         * notation e.g. `"1.04662e-7"`), so `parseFloat` is the right primitive
+         * — but we tolerate plain numbers too in case the shape ever flips.
+         */
+        private _coerceUsdPrice(raw: unknown): number | null {
+            if (typeof raw === 'number') {
+                return Number.isFinite(raw) && raw >= 0 ? raw : null;
+            }
+            if (typeof raw !== 'string') return null;
+            const trimmed = raw.trim();
+            if (trimmed === '') return null;
+            const n = parseFloat(trimmed);
+            if (!Number.isFinite(n) || n < 0) return null;
+            return n;
+        }
+
+        /**
+         * Fetch current USD prices for every Dexalot-listed token. Public
+         * endpoint, no signed auth required. Cached for 15 minutes (semi-static
+         * tier).
+         *
+         * Returns a `Record<string, number>` map of token symbol → USD price.
+         * The backend currently emits the map shape directly as
+         * `Record<string, string>` (string prices, including scientific
+         * notation for very small values); we coerce to `number` and silently
+         * drop entries we cannot interpret. An array-of-objects fallback
+         * (`[{symbol, price}, ...]`) is also accepted in case the backend
+         * shape ever changes.
+         *
+         * The `env` query parameter is forwarded for parity with the Python
+         * SDK and to namespace the cache key per network; the backend itself
+         * currently determines the network from the API host and does not
+         * consult the parameter.
+         */
+        public async getTokenUsdPrices(env?: string): Promise<Result<Record<string, number>>> {
+            const targetEnv = env ?? this.config.parentEnv;
+            const cachedFn = withInstanceCache(
+                this,
+                this._semiStaticCache,
+                `getTokenUsdPrices|${targetEnv}`,
+                async (): Promise<Result<Record<string, number>>> => {
+                    try {
+                        const data = await this._apiCall<unknown>(
+                            'get',
+                            ENDPOINTS.INFO_USD_PRICES,
+                            { params: { env: targetEnv } }
+                        );
+                        const out: Record<string, number> = {};
+                        if (Array.isArray(data)) {
+                            // Forward-compat: array-of-objects shape.
+                            for (const row of data) {
+                                if (!row || typeof row !== 'object') continue;
+                                const r = row as Record<string, unknown>;
+                                const symbol = typeof r.symbol === 'string' ? r.symbol.trim() : '';
+                                if (!symbol) continue;
+                                const price = this._coerceUsdPrice(r.price);
+                                if (price === null) continue;
+                                out[symbol] = price;
+                            }
+                            return Result.ok(out);
+                        }
+                        if (data && typeof data === 'object') {
+                            // Current shape: flat `Record<string, string>` map.
+                            for (const [symbol, raw] of Object.entries(data as Record<string, unknown>)) {
+                                const trimmedSym = symbol.trim();
+                                if (!trimmedSym) continue;
+                                const price = this._coerceUsdPrice(raw);
+                                if (price === null) continue;
+                                out[trimmedSym] = price;
+                            }
+                            return Result.ok(out);
+                        }
+                        return Result.fail(
+                            `Unexpected USD prices response shape: expected object or array, got ${typeof data}.`
+                        );
+                    } catch (e) {
+                        return Result.fail(this._sanitizeError(e, 'fetching token USD prices'));
+                    }
+                }
+            );
+            return cachedFn();
+        }
+
+        /**
+         * Coerce a raw timestamp value (number or numeric string) into unix
+         * seconds. Heuristic: anything ≥ 1e12 is treated as milliseconds and
+         * divided by 1000 (a 32-bit second-precision unix epoch maxes out at
+         * `2^31 ≈ 2.1e9`, so 1e12 is a safe boundary that catches both
+         * `Date.now()` and 13-digit string forms). Returns `null` if the
+         * input cannot be parsed as a finite non-negative integer.
+         */
+        private _coerceTimestampSeconds(raw: unknown): number | null {
+            let n: number;
+            if (typeof raw === 'number') {
+                n = raw;
+            } else if (typeof raw === 'string') {
+                const trimmed = raw.trim();
+                if (trimmed === '') return null;
+                n = Number(trimmed);
+            } else {
+                return null;
+            }
+            if (!Number.isFinite(n) || n < 0) return null;
+            if (n >= 1e12) n = Math.floor(n / 1000);
+            return Math.floor(n);
+        }
+
+        /**
+         * Coerce a raw price value into a finite non-negative number. Mirrors
+         * `_coerceUsdPrice` above but exposed as a separate helper so future
+         * tightening of the price-history shape (e.g. requiring strictly
+         * positive prices) is local to one branch.
+         */
+        private _coerceHistoryPrice(raw: unknown): number | null {
+            if (typeof raw === 'number') {
+                return Number.isFinite(raw) && raw >= 0 ? raw : null;
+            }
+            if (typeof raw !== 'string') return null;
+            const trimmed = raw.trim();
+            if (trimmed === '') return null;
+            const n = parseFloat(trimmed);
+            if (!Number.isFinite(n) || n < 0) return null;
+            return n;
+        }
+
+        /**
+         * Pull a timestamp out of a raw row. The backend currently emits
+         * `date` as an ISO-8601 string; we additionally accept `ts`,
+         * `timestamp`, and `time` (numeric or numeric-string) so the contract
+         * is stable if the shape ever flips. Returns unix seconds (UTC), or
+         * `null` if no recognised field parses.
+         */
+        private _extractHistoryTimestamp(row: Record<string, unknown>): number | null {
+            // ISO-string `date` first, matching the current backend shape.
+            const rawDate = row.date;
+            if (typeof rawDate === 'string' && rawDate.trim() !== '') {
+                const parsed = Date.parse(rawDate);
+                if (Number.isFinite(parsed)) {
+                    return Math.floor(parsed / 1000);
+                }
+            }
+            // Numeric aliases — try each in turn.
+            for (const key of ['ts', 'timestamp', 'time'] as const) {
+                if (key in row) {
+                    const coerced = this._coerceTimestampSeconds(row[key]);
+                    if (coerced !== null) return coerced;
+                }
+            }
+            return null;
+        }
+
+        /**
+         * Shared implementation for daily / hourly USD price history. Public
+         * methods only vary in the REST endpoint constant they pass here, so
+         * the cache key, normalization, sort order, and client-side
+         * `[from, to]` filter are guaranteed to behave identically across
+         * both surfaces.
+         *
+         * Cache: static tier (1h TTL) — past prices don't change. Cache key
+         * includes `path` so daily and hourly never collide on the same slot
+         * even with identical `(token, from, to)` tuples.
+         */
+        private async _fetchPriceHistory(
+            path: string,
+            token: string,
+            opts?: { from?: number; to?: number }
+        ): Promise<Result<PricePoint[]>> {
+            const tokenResult = validateTokenSymbol(token, 'token');
+            if (!tokenResult.success) {
+                return Result.fail(tokenResult.error!);
+            }
+            const sym = this.normalizeToken(token);
+            const from = opts?.from;
+            const to = opts?.to;
+            const cachedFn = withInstanceCache(
+                this,
+                this._staticCache,
+                `priceHistory|${path}|${sym}|${from ?? ''}|${to ?? ''}`,
+                async (): Promise<Result<PricePoint[]>> => {
+                    try {
+                        const params: Record<string, string | number> = { token: sym };
+                        if (from !== undefined) params.from = from;
+                        if (to !== undefined) params.to = to;
+                        const data = await this._apiCall<unknown>(
+                            'get',
+                            path,
+                            { params }
+                        );
+                        if (!Array.isArray(data)) {
+                            return Result.fail(
+                                `Unexpected price history response shape: expected array, got ${typeof data}.`
+                            );
+                        }
+                        const points: PricePoint[] = [];
+                        for (const row of data) {
+                            if (!row || typeof row !== 'object') continue;
+                            const r = row as Record<string, unknown>;
+                            const ts = this._extractHistoryTimestamp(r);
+                            if (ts === null) continue;
+                            const price = this._coerceHistoryPrice(r.price);
+                            if (price === null) continue;
+                            if (from !== undefined && ts < from) continue;
+                            if (to !== undefined && ts > to) continue;
+                            points.push({ timestamp: ts, price });
+                        }
+                        points.sort((a, b) => a.timestamp - b.timestamp);
+                        return Result.ok(points);
+                    } catch (e) {
+                        return Result.fail(this._sanitizeError(e, 'fetching token price history'));
+                    }
+                }
+            );
+            return cachedFn();
+        }
+
+        /**
+         * Daily USD price history for one token. Returns an ascending-time
+         * ordered `PricePoint[]` from the public `token-usd-price-history`
+         * endpoint. Past prices don't change, so results are cached in the
+         * static tier (1h TTL); the cache key is path-namespaced so daily
+         * and hourly never collide.
+         *
+         * The optional `from`/`to` window is in unix seconds. The backend
+         * currently ignores it (the host fixes the network and the
+         * lookback) but the SDK forwards both for forward-compat and
+         * additionally filters the returned series client-side so the
+         * caller's range contract holds regardless of backend behavior.
+         *
+         * No authentication required (public endpoint).
+         */
+        public async getTokenPriceHistory(
+            token: string,
+            opts?: { from?: number; to?: number }
+        ): Promise<Result<PricePoint[]>> {
+            return this._fetchPriceHistory(ENDPOINTS.INFO_PRICE_HISTORY, token, opts);
+        }
+
+        /**
+         * Hourly USD price history for one token. Same contract as
+         * `getTokenPriceHistory` (ascending-time `PricePoint[]`, static-tier
+         * 1h cache, optional `from`/`to` window applied client-side) but
+         * routes through the hourly endpoint. Useful when a more granular
+         * series is needed than the daily variant — backend currently
+         * returns the trailing ~24h at 3-hour granularity.
+         *
+         * No authentication required (public endpoint).
+         */
+        public async getTokenHourlyPriceHistory(
+            token: string,
+            opts?: { from?: number; to?: number }
+        ): Promise<Result<PricePoint[]>> {
+            return this._fetchPriceHistory(ENDPOINTS.INFO_HOURLY_PRICE_HISTORY, token, opts);
+        }
+
+        /**
+         * Coerce a Big-string display-decimal numeric value (e.g. `"100.5"`)
+         * into a finite non-negative `number`. The backend's
+         * `transferscombined` rows ship `quantity` and `fee` as already-
+         * display-decimal numeric strings — there is no wei→human
+         * conversion to apply. Returns `null` for non-string/non-number
+         * input, empty strings, or anything that does not parse to a
+         * finite non-negative float (mirroring how the frontend's
+         * NumberHelper guards against malformed rows).
+         */
+        private _coerceTransferAmount(raw: unknown): number | null {
+            if (typeof raw === 'number') {
+                return Number.isFinite(raw) && raw >= 0 ? raw : null;
+            }
+            if (typeof raw !== 'string') return null;
+            const trimmed = raw.trim();
+            if (trimmed === '') return null;
+            const n = parseFloat(trimmed);
+            if (!Number.isFinite(n) || n < 0) return null;
+            return n;
+        }
+
+        /** ISO-8601 string OR numeric/numeric-string -> unix seconds (UTC), or null. */
+        private _coerceTransferTs(raw: unknown): number | null {
+            if (typeof raw === 'string' && raw.trim() !== '') {
+                const parsed = Date.parse(raw);
+                if (Number.isFinite(parsed)) return Math.floor(parsed / 1000);
+            }
+            return this._coerceTimestampSeconds(raw);
+        }
+
+        /**
+         * Normalize one raw `DBTransfer`-shaped row from the backend into
+         * the canonical `Transfer` type. Returns `null` for any row that
+         * is missing required fields or carries an unknown
+         * `action_type` / `status` enum — the public method silently
+         * drops these so a single bad row doesn't poison the page.
+         *
+         * `bridge` falls back to `"NATIVE"` for unknown enum values
+         * because the frontend treats unrecognised bridges the same way
+         * (display-only label, no behavior depends on the precise id),
+         * and the row is otherwise valid.
+         */
+        private _normalizeTransfer(raw: unknown): Transfer | null {
+            if (!raw || typeof raw !== 'object') return null;
+            const r = raw as Record<string, unknown>;
+
+            const actionKey = typeof r.action_type === 'number' ? r.action_type : null;
+            if (actionKey === null) return null;
+            const actionType = TRANSFER_ACTION_TYPE_LABELS[actionKey];
+            if (!actionType) return null;
+
+            const statusKey = typeof r.status === 'number' ? r.status : null;
+            if (statusKey === null) return null;
+            const status = TRANSFER_STATUS_LABELS[statusKey];
+            if (!status) return null;
+
+            const symbol = typeof r.symbol === 'string' ? r.symbol : null;
+            if (!symbol) return null;
+
+            const quantity = this._coerceTransferAmount(r.quantity);
+            if (quantity === null) return null;
+
+            // Fee defaults to 0 if missing or unparseable — many native /
+            // portfolio-internal legs report `"0"` and some omit the field.
+            const fee = this._coerceTransferAmount(r.fee) ?? 0;
+
+            const traderAddress = typeof r.traderaddress === 'string' ? r.traderaddress : '';
+            const bridgeKey = typeof r.bridge === 'number' ? r.bridge : -1;
+            const bridge = TRANSFER_BRIDGE_LABELS[bridgeKey] ?? 'NATIVE';
+
+            const bridgeUrl = typeof r.bridge_url === 'string' ? r.bridge_url : '';
+            const nonce = typeof r.nonce === 'number' ? r.nonce : -1;
+            const sourceEnv = typeof r.source_env === 'string' ? r.source_env : '';
+            const sourceChainId =
+                typeof r.source_chain_id === 'number' ? r.source_chain_id : 0;
+            const sourceTx = typeof r.source_tx === 'string' ? r.source_tx : '';
+            // Source leg is always present; `0` keeps the field non-null
+            // when the timestamp is missing or unparseable.
+            const sourceTs = this._coerceTransferTs(r.source_ts) ?? 0;
+
+            const targetEnv = typeof r.target_env === 'string' ? r.target_env : null;
+            const targetChainId =
+                typeof r.target_chain_id === 'number' ? r.target_chain_id : null;
+            const targetTx = typeof r.target_tx === 'string' ? r.target_tx : null;
+            // Null when there is no target leg yet (or no parseable time).
+            const targetTs = this._coerceTransferTs(r.target_ts);
+
+            return {
+                actionType,
+                status,
+                symbol,
+                quantity,
+                fee,
+                traderAddress,
+                bridge,
+                bridgeUrl,
+                nonce,
+                sourceEnv,
+                sourceChainId,
+                sourceTx,
+                sourceTs,
+                targetEnv,
+                targetChainId,
+                targetTx,
+                targetTs,
+            };
+        }
+
+        /**
+         * Paginated history of every deposit, withdrawal, gas top-up,
+         * portfolio P2P send/receive, and bridge recovery involving the
+         * connected wallet. Returns canonical `Transfer[]` rows with
+         * camelCase fields and human-readable `actionType` / `status`
+         * / `bridge` labels lifted from the backend's numeric enums.
+         *
+         * Routes through the signed REST endpoint
+         * `/api/trading/signed/transferscombined`; `x-signature` is
+         * attached via the shared `_getAuthHeaders()` helper. The
+         * backend's request shape uses `itemsperpage` / `pageno` /
+         * `periodfrom` / `periodto` / `symbol` query params (NOT the
+         * `limit`/`offset`/`from`/`to`/`kind` shape suggested by a
+         * plan-only reading of the trade-kit tool wrapper) — the
+         * trade-kit's MCP tool forwards `limit`/`offset` blindly but
+         * the actual backend ignores them.
+         *
+         * Cached for 10 seconds (balance tier) per `(address, opts)`
+         * tuple — distinct signers and distinct filter combinations
+         * never share a cache slot. Returned amounts (`quantity`,
+         * `fee`) are already display-decimal numbers; no
+         * wei→human conversion is applied because the backend has
+         * already done it.
+         *
+         * @param opts - Optional ergonomic filters:
+         *   - `symbol` — token symbol to filter by; canonicalized via
+         *     `normalizeToken` (casing variants and known aliases collapse).
+         *   - `fromTs` / `toTs` — inclusive time window as unix **seconds**.
+         *   - `limit` — page size (rows per page); defaults to 100.
+         *   - `offset` — number of rows to skip; defaults to 0.
+         *
+         * `limit`/`offset` translate to the backend's `itemsperpage` /
+         * `pageno` shape internally (`itemsperpage = max(1, limit)`,
+         * `pageno = floor(offset / itemsperpage) + 1`), and `fromTs`/`toTs`
+         * translate to `periodfrom` / `periodto`. The cache key is built
+         * from the translated values, so equivalent `limit`/`offset`
+         * combinations that map to the same page share a cache slot
+         * (matching the Python SDK).
+         */
+        public async getCombinedTransfers(opts?: {
+            symbol?: string;
+            fromTs?: number; // unix seconds
+            toTs?: number; // unix seconds
+            limit?: number;
+            offset?: number;
+        }): Promise<Result<Transfer[]>> {
+            if (!this.signer) {
+                return Result.fail('Signer not configured.');
+            }
+            let address: string;
+            try {
+                address = await this.signer.getAddress();
+            } catch (e) {
+                return Result.fail(this._sanitizeError(e, 'resolving wallet address'));
+            }
+
+            // Translate the ergonomic limit/offset/fromTs/toTs surface
+            // into the backend's itemsperpage/pageno/periodfrom/periodto
+            // query shape. `itemsperpage` is floored at 1 so a 0/negative
+            // limit never produces an invalid page size, and `pageno` is
+            // derived from the offset so equivalent limit/offset combos
+            // landing on the same page share a cache slot (matches Python).
+            const itemsperpage = Math.max(1, opts?.limit ?? 100);
+            const pageno = Math.floor((opts?.offset ?? 0) / itemsperpage) + 1;
+            const symbol = opts?.symbol ? this.normalizeToken(opts.symbol) : undefined;
+            // The backend's periodfrom/periodto expect ISO-8601 date strings,
+            // not unix seconds — forwarding the raw fromTs/toTs integers makes
+            // the endpoint reject the request ("Malformed Request! ISO Date
+            // format problem"). Convert the ergonomic unix-seconds inputs to
+            // ISO-8601 here.
+            const periodfrom =
+                opts?.fromTs !== undefined ? new Date(opts.fromTs * 1000).toISOString() : undefined;
+            const periodto =
+                opts?.toTs !== undefined ? new Date(opts.toTs * 1000).toISOString() : undefined;
+
+            // Cache key is namespaced by resolved address so signer
+            // swaps within a single client never collide on the same
+            // slot, and by the TRANSLATED filter values so different
+            // backend-query combinations are distinct (and equivalent
+            // limit/offset pairs that map to the same page collapse).
+            const cacheArgs = JSON.stringify({
+                itemsperpage,
+                pageno,
+                symbol,
+                periodfrom,
+                periodto,
+            });
+
+            const cachedFn = withInstanceCache(
+                this,
+                this._balanceCache,
+                `getCombinedTransfers|${address}|${cacheArgs}`,
+                async (): Promise<Result<Transfer[]>> => {
+                    try {
+                        const headers = await this._getAuthHeaders();
+                        const params: Record<string, string | number> = {
+                            itemsperpage,
+                            pageno,
+                        };
+                        if (symbol !== undefined) params.symbol = symbol;
+                        if (periodfrom !== undefined) params.periodfrom = periodfrom;
+                        if (periodto !== undefined) params.periodto = periodto;
+
+                        const data = await this._apiCall<unknown>(
+                            'get',
+                            ENDPOINTS.TRADING_COMBINED_TRANSFERS,
+                            { headers, params }
+                        );
+
+                        // Backend ships `{count, rows}`; we tolerate a
+                        // bare array as a forward-compat fallback.
+                        let rows: unknown[];
+                        if (Array.isArray(data)) {
+                            rows = data;
+                        } else if (data && typeof data === 'object') {
+                            const envelope = data as Record<string, unknown>;
+                            rows = Array.isArray(envelope.rows) ? envelope.rows : [];
+                        } else {
+                            return Result.fail(
+                                `Unexpected transfers response shape: expected object or array, got ${typeof data}.`
+                            );
+                        }
+
+                        const transfers: Transfer[] = [];
+                        for (const row of rows) {
+                            const normalized = this._normalizeTransfer(row);
+                            if (normalized) transfers.push(normalized);
+                        }
+                        return Result.ok(transfers);
+                    } catch (e) {
+                        return Result.fail(this._sanitizeError(e, 'fetching combined transfers'));
+                    }
+                }
+            );
+            return cachedFn();
         }
 }

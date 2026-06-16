@@ -247,6 +247,16 @@ export class BaseClient {
 
     /**
      * Make an API call with rate limiting and retry.
+     *
+     * On failure, lifts backend `reasonCode` + `reason` from the axios
+     * response body (when present) into the thrown Error's `message`.
+     * The Dexalot REST API encodes failures as
+     * `{ reasonCode: "FQ-015", reason: "..." }` (also tolerates the
+     * snake_case `reason_code` and the alternate `message` field that
+     * some endpoints emit). Without this lift the raw axios message
+     * collapses everything to `"Request failed with status code N"`,
+     * which swallows the backend-level reason and makes user-visible
+     * `Result.fail` strings useless for diagnosis.
      */
     public async _apiCall<T>(
         method: 'get' | 'post' | 'put' | 'delete',
@@ -272,20 +282,46 @@ export class BaseClient {
             return response.data;
         };
 
-        // Apply retry if enabled
-        if (this.config.retryEnabled) {
-            const retryOpts: RetryOptions = {
-                maxAttempts: this.config.retryMaxAttempts,
-                initialDelay: this.config.retryInitialDelay * 1000,
-                maxDelay: this.config.retryMaxDelay * 1000,
-                exponentialBase: this.config.retryExponentialBase,
-                retryOnStatus: this.config.retryOnStatus,
-                retryOnExceptions: this.config.retryOnExceptions,
-            };
-            return asyncRetry(makeRequest, retryOpts)();
+        try {
+            // Apply retry if enabled
+            if (this.config.retryEnabled) {
+                const retryOpts: RetryOptions = {
+                    maxAttempts: this.config.retryMaxAttempts,
+                    initialDelay: this.config.retryInitialDelay * 1000,
+                    maxDelay: this.config.retryMaxDelay * 1000,
+                    exponentialBase: this.config.retryExponentialBase,
+                    retryOnStatus: this.config.retryOnStatus,
+                    retryOnExceptions: this.config.retryOnExceptions,
+                };
+                return await asyncRetry(makeRequest, retryOpts)();
+            }
+            return await makeRequest();
+        } catch (e) {
+            if (
+                axios.isAxiosError(e) &&
+                e.response?.data &&
+                typeof e.response.data === 'object'
+            ) {
+                const body = e.response.data as Record<string, unknown>;
+                const reasonCode = (body.reasonCode ?? body.reason_code) as
+                    | string
+                    | undefined;
+                const reason = (body.reason ?? body.message) as string | undefined;
+                if (typeof reasonCode === 'string') {
+                    const tail =
+                        typeof reason === 'string'
+                            ? reason
+                            : e instanceof Error
+                              ? e.message
+                              : String(e);
+                    throw new Error(`${reasonCode}: ${tail}`);
+                }
+                if (typeof reason === 'string') {
+                    throw new Error(reason);
+                }
+            }
+            throw e;
         }
-
-        return makeRequest();
     }
 
     public getRevertReason(error: any): string {
@@ -956,29 +992,51 @@ export class BaseClient {
     }
 
     /**
-     * Get deployment configuration.
+     * Get deployment configuration from the REST API.
      * Cached for 1 hour (static data).
+     *
+     * Backward-compatible: no-args call still works and uses defaults
+     * (`env = config.parentEnv`, `contracttype = 'All'`, `returnabi = true`).
+     * The backend expects lowercase query param names (`contracttype`,
+     * `returnabi`), not the TS camelCase form on the opts object.
+     *
+     * The cache key includes all three resolved params so filter
+     * variants do not collide on the same static-cache slot.
      */
-    public async getDeployment(): Promise<Result<any>> {
-        return withInstanceCache(
+    public async getDeployment(opts?: {
+        env?: string;
+        contractType?:
+            | 'All'
+            | 'Portfolio'
+            | 'TradePairs'
+            | 'MainnetRFQ'
+            | 'PortfolioMain'
+            | 'PortfolioSub'
+            | 'OrderBooks'
+            | string;
+        returnAbi?: boolean;
+    }): Promise<Result<any[]>> {
+        const env = opts?.env ?? this.config.parentEnv;
+        const contracttype = opts?.contractType ?? 'All';
+        const returnabi = opts?.returnAbi ?? true;
+        const cachedFn = withInstanceCache(
             this,
             this._staticCache,
-            'getDeployment',
-            async () => {
-                // Ensure environments are fetched first (needed for providers)
-                if (Object.keys(this.chainConfig).length === 0) {
-                    const envsResult = await this.getEnvironments();
-                    if (!envsResult.success) {
-                        return Result.fail(`Failed to fetch environments: ${envsResult.error}`);
-                    }
+            `getDeployment|${env}|${contracttype}|${returnabi}`,
+            async (): Promise<Result<any[]>> => {
+                try {
+                    const data = await this._apiCall<any[]>(
+                        'get',
+                        ENDPOINTS.TRADING_DEPLOYMENT,
+                        { params: { env, contracttype, returnabi } }
+                    );
+                    return Result.ok(data);
+                } catch (e) {
+                    return Result.fail(this._sanitizeError(e, 'fetching deployment'));
                 }
-                
-                // Always fetch fresh from API (cache wrapper handles TTL)
-                await this._fetchDeployments();
-                
-                return Result.ok(this.deployments);
             }
-        )();
+        );
+        return cachedFn();
     }
 
     public getSubnetNetworkInfo(): { chainId: number; rpc: string; name: string } | null {

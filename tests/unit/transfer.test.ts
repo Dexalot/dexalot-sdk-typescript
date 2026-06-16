@@ -3,7 +3,7 @@ import { TransferClient } from '../../src/core/transfer';
 import { Utils } from '../../src/utils';
 import { DexalotClient } from '../../src/core/client';
 import { ethers, Contract, MaxUint256 } from 'ethers';
-import { ENV, DEFAULTS } from '../../src/constants';
+import { ENV, DEFAULTS, ENDPOINTS } from '../../src/constants';
 
 // Mock everything
 jest.mock('ethers');
@@ -210,6 +210,530 @@ describe('TransferClient', () => {
             const result = await client.getTokenDetails('AVAX');
             expect(result.success).toBe(false);
             expect(result.error).toBeDefined();
+        });
+    });
+
+    describe('getTokenUsdPrices', () => {
+        // Backend currently returns a flat `Record<string, string>` map of
+        // token symbol → numeric price. The SDK normalizes to `Record<string,
+        // number>` and silently drops malformed entries (missing symbol /
+        // non-numeric / non-finite). Cache key is namespaced by `env` so
+        // testnet and mainnet clients never collide on the same slot.
+        beforeEach(() => {
+            // Disable retry so a single rejection from the spy doesn't
+            // get retried and folded into the rate-limited fetch path.
+            client.config.retryEnabled = false;
+        });
+
+        it('returns token-symbol → USD-price map from the public endpoint', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({
+                    ALOT: '0.0411',
+                    AVAX: '8.6811',
+                    USDC: '0.9996',
+                });
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual({
+                ALOT: 0.0411,
+                AVAX: 8.6811,
+                USDC: 0.9996,
+            });
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.INFO_USD_PRICES,
+                { params: { env: client.config.parentEnv } }
+            );
+        });
+
+        it('defaults env to config.parentEnv when not provided', async () => {
+            client.config.parentEnv = 'fuji-multi-avax';
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({ ALOT: '0.04' });
+
+            await client.getTokenUsdPrices();
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.INFO_USD_PRICES,
+                { params: { env: 'fuji-multi-avax' } }
+            );
+        });
+
+        it('uses explicit env over config.parentEnv when provided', async () => {
+            client.config.parentEnv = 'fuji-multi-avax';
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({ ALOT: '0.04' });
+
+            await client.getTokenUsdPrices('production-multi-avax');
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.INFO_USD_PRICES,
+                { params: { env: 'production-multi-avax' } }
+            );
+        });
+
+        it('returns Result.fail when the API call rejects', async () => {
+            jest.spyOn(client as any, '_apiCall').mockRejectedValueOnce(
+                new Error('upstream down')
+            );
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(false);
+            expect(result.error).toBeDefined();
+        });
+
+        it('shares a cache slot for repeated identical calls within TTL', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValue({ ALOT: '0.04' });
+
+            await client.getTokenUsdPrices('fuji-multi-avax');
+            await client.getTokenUsdPrices('fuji-multi-avax');
+
+            // Second call hits the semi-static cache; _apiCall fires once.
+            expect(apiSpy).toHaveBeenCalledTimes(1);
+        });
+
+        it('uses distinct cache slots per env so testnet and mainnet do not collide', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValue({ ALOT: '0.04' });
+
+            await client.getTokenUsdPrices('fuji-multi-avax');
+            await client.getTokenUsdPrices('production-multi-avax');
+
+            expect(apiSpy).toHaveBeenCalledTimes(2);
+        });
+
+        it('normalizes array-of-objects shape to a map (forward-compat)', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                { symbol: 'ALOT', price: '0.0411' },
+                { symbol: 'AVAX', price: 8.6811 },
+            ]);
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual({ ALOT: 0.0411, AVAX: 8.6811 });
+        });
+
+        it('handles scientific-notation string prices', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                COQ: '1.04662e-7',
+            });
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(true);
+            expect(result.data!.COQ).toBeCloseTo(1.04662e-7, 12);
+        });
+
+        it('skips malformed entries silently (non-numeric / missing symbol / non-finite)', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                ALOT: '0.0411',
+                BROKEN: 'not-a-number',
+                EMPTY: '',
+                INF: 'Infinity',
+                NULLISH: null,
+                AVAX: '8.6811',
+            });
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual({ ALOT: 0.0411, AVAX: 8.6811 });
+        });
+
+        it('skips malformed array entries (missing symbol or non-numeric price)', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                { symbol: 'ALOT', price: '0.0411' },
+                { symbol: '', price: '1.0' }, // missing symbol
+                { price: '2.0' }, // no symbol field
+                { symbol: 'BAD', price: 'oops' }, // non-numeric price
+                { symbol: 'AVAX', price: '8.6811' },
+            ]);
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual({ ALOT: 0.0411, AVAX: 8.6811 });
+        });
+
+        it('returns Result.fail when the API response is neither object nor array', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce('unexpected');
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(false);
+            expect(result.error).toBeDefined();
+        });
+
+        it('skips numeric entries that are negative or non-finite', async () => {
+            // Exercises the `typeof raw === 'number'` branch of the price
+            // coercer with values that should be rejected (NaN, Infinity,
+            // negative). Plain JSON cannot carry NaN/Infinity, but the array
+            // shape can carry any JS number via the price field.
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                { symbol: 'ALOT', price: 0.04 },
+                { symbol: 'NEG', price: -1 },
+                { symbol: 'NAN', price: Number.NaN },
+                { symbol: 'INF', price: Number.POSITIVE_INFINITY },
+                { symbol: 'AVAX', price: 8.6811 },
+            ]);
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual({ ALOT: 0.04, AVAX: 8.6811 });
+        });
+
+        it('skips null and non-object rows in the array shape', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                null,
+                'not-an-object',
+                42,
+                { symbol: 'ALOT', price: '0.04' },
+            ]);
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual({ ALOT: 0.04 });
+        });
+
+        it('skips entries whose key is empty or whitespace in the map shape', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                '': '1.0',
+                '   ': '2.0',
+                ALOT: '0.04',
+            });
+
+            const result = await client.getTokenUsdPrices();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual({ ALOT: 0.04 });
+        });
+    });
+
+    describe('getTokenPriceHistory / getTokenHourlyPriceHistory', () => {
+        // Backend returns `[{date: ISO-string, price: stringified-number}, ...]`
+        // sorted descending by date. The SDK normalizes to ascending
+        // unix-seconds + numeric `PricePoint[]`, tolerates alias keys
+        // (`ts`/`timestamp`/`time` → `timestamp`), coerces string→number
+        // prices, and drops malformed rows silently. Cache key is namespaced
+        // by path so daily and hourly never collide on the static-tier slot.
+        beforeEach(() => {
+            client.config.retryEnabled = false;
+        });
+
+        // Two ISO timestamps and their unix-second equivalents.
+        const D1_ISO = '2026-05-01T00:00:00.000Z';
+        const D2_ISO = '2026-05-02T00:00:00.000Z';
+        const D1_TS = Math.floor(Date.parse(D1_ISO) / 1000);
+        const D2_TS = Math.floor(Date.parse(D2_ISO) / 1000);
+
+        describe('getTokenPriceHistory (daily)', () => {
+            it('returns ascending-time PricePoint[] from descending API rows', async () => {
+                const apiSpy = jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValueOnce([
+                        { date: D2_ISO, price: '0.042' },
+                        { date: D1_ISO, price: '0.041' },
+                    ]);
+
+                const result = await client.getTokenPriceHistory('ALOT');
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([
+                    { timestamp: D1_TS, price: 0.041 },
+                    { timestamp: D2_TS, price: 0.042 },
+                ]);
+                expect(apiSpy).toHaveBeenCalledWith(
+                    'get',
+                    ENDPOINTS.INFO_PRICE_HISTORY,
+                    { params: { token: 'ALOT' } }
+                );
+            });
+
+            it('forwards from/to query params when supplied', async () => {
+                const apiSpy = jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValueOnce([]);
+
+                await client.getTokenPriceHistory('ALOT', { from: 100, to: 200 });
+
+                expect(apiSpy).toHaveBeenCalledWith(
+                    'get',
+                    ENDPOINTS.INFO_PRICE_HISTORY,
+                    { params: { token: 'ALOT', from: 100, to: 200 } }
+                );
+            });
+
+            it('filters rows outside [from, to] client-side (defense in depth)', async () => {
+                const D3_ISO = '2026-05-03T00:00:00.000Z';
+                const D3_TS = Math.floor(Date.parse(D3_ISO) / 1000);
+                jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValueOnce([
+                        { date: D3_ISO, price: '0.043' },
+                        { date: D2_ISO, price: '0.042' },
+                        { date: D1_ISO, price: '0.041' },
+                    ]);
+
+                const result = await client.getTokenPriceHistory('ALOT', {
+                    from: D2_TS,
+                    to: D3_TS,
+                });
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([
+                    { timestamp: D2_TS, price: 0.042 },
+                    { timestamp: D3_TS, price: 0.043 },
+                ]);
+            });
+
+            it('returns Result.fail when token is empty or non-string', async () => {
+                const r1 = await client.getTokenPriceHistory('');
+                expect(r1.success).toBe(false);
+                const r2 = await client.getTokenPriceHistory(null as any);
+                expect(r2.success).toBe(false);
+            });
+
+            it('returns empty array when the API returns an empty list', async () => {
+                jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValueOnce([]);
+
+                const result = await client.getTokenPriceHistory('NEWTOKEN');
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([]);
+            });
+
+            it('returns Result.fail when _apiCall rejects', async () => {
+                jest.spyOn(client as any, '_apiCall').mockRejectedValueOnce(
+                    new Error('upstream down')
+                );
+
+                const result = await client.getTokenPriceHistory('ALOT');
+
+                expect(result.success).toBe(false);
+                expect(result.error).toBeDefined();
+            });
+
+            it('shares a cache slot for repeated identical calls within TTL', async () => {
+                const apiSpy = jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValue([{ date: D1_ISO, price: '0.04' }]);
+
+                await client.getTokenPriceHistory('ALOT');
+                await client.getTokenPriceHistory('ALOT');
+
+                expect(apiSpy).toHaveBeenCalledTimes(1);
+            });
+
+            it('uses distinct cache slots per (token, from, to) tuple', async () => {
+                const apiSpy = jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValue([{ date: D1_ISO, price: '0.04' }]);
+
+                await client.getTokenPriceHistory('ALOT');
+                await client.getTokenPriceHistory('AVAX');
+                await client.getTokenPriceHistory('ALOT', { from: 1, to: 2 });
+                await client.getTokenPriceHistory('ALOT', { from: 3, to: 4 });
+
+                expect(apiSpy).toHaveBeenCalledTimes(4);
+            });
+
+            it('returns Result.fail when the API response is not an array', async () => {
+                jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValueOnce({ not: 'an array' });
+
+                const result = await client.getTokenPriceHistory('ALOT');
+
+                expect(result.success).toBe(false);
+                expect(result.error).toBeDefined();
+            });
+
+            it('accepts numeric `ts` / `timestamp` / `time` alias fields', async () => {
+                jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                    { ts: D1_TS, price: '0.041' },
+                    { timestamp: D2_TS, price: '0.042' },
+                    { time: D2_TS + 86400, price: '0.043' },
+                ]);
+
+                const result = await client.getTokenPriceHistory('ALOT');
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([
+                    { timestamp: D1_TS, price: 0.041 },
+                    { timestamp: D2_TS, price: 0.042 },
+                    { timestamp: D2_TS + 86400, price: 0.043 },
+                ]);
+            });
+
+            it('coerces millisecond timestamps to seconds', async () => {
+                const msNow = D1_TS * 1000;
+                jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                    { ts: msNow, price: '0.041' },
+                ]);
+
+                const result = await client.getTokenPriceHistory('ALOT');
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([{ timestamp: D1_TS, price: 0.041 }]);
+            });
+
+            it('accepts string-numeric `ts` alias and drops non-numeric/empty/non-string types', async () => {
+                // Covers the string-parsing branch of `_coerceTimestampSeconds`
+                // (string → Number()) plus the rejection branches: empty
+                // string, non-numeric string, and non-string-non-number types
+                // (boolean, object). Each malformed row falls through to
+                // `null` and is dropped silently.
+                jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                    { ts: String(D1_TS), price: '0.041' },     // string number → ok
+                    { ts: '   ', price: '0.5' },                // empty after trim → null
+                    { ts: 'nope', price: '0.5' },               // non-numeric string → null
+                    { ts: true, price: '0.5' },                 // boolean → null
+                    { ts: { v: 1 }, price: '0.5' },             // object → null
+                ]);
+
+                const result = await client.getTokenPriceHistory('ALOT');
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([{ timestamp: D1_TS, price: 0.041 }]);
+            });
+
+            it('accepts numeric prices (forward-compat with non-string shape)', async () => {
+                jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                    { date: D1_ISO, price: 0.041 },
+                ]);
+
+                const result = await client.getTokenPriceHistory('ALOT');
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([{ timestamp: D1_TS, price: 0.041 }]);
+            });
+
+            it('silently drops malformed rows (non-object, missing fields, bad ts, bad price)', async () => {
+                jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                    null,
+                    'not-an-object',
+                    42,
+                    { date: D1_ISO, price: '0.041' },
+                    { date: 'not-a-date', price: '0.5' },     // unparseable ts
+                    { price: '0.5' },                          // missing ts
+                    { date: D2_ISO },                          // missing price
+                    { date: D2_ISO, price: 'oops' },           // non-numeric price
+                    { date: D2_ISO, price: '' },               // empty string price
+                    { date: D2_ISO, price: '   ' },            // whitespace-only price
+                    { date: D2_ISO, price: -1 },               // negative
+                    { date: D2_ISO, price: Number.NaN },       // NaN
+                    { date: D2_ISO, price: Number.POSITIVE_INFINITY },
+                    { date: D2_ISO, price: true },             // boolean price
+                ]);
+
+                const result = await client.getTokenPriceHistory('ALOT');
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([{ timestamp: D1_TS, price: 0.041 }]);
+            });
+        });
+
+        describe('getTokenHourlyPriceHistory', () => {
+            it('hits the hourly endpoint and returns normalized PricePoint[]', async () => {
+                const apiSpy = jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValueOnce([
+                        { date: D2_ISO, price: '0.042' },
+                        { date: D1_ISO, price: '0.041' },
+                    ]);
+
+                const result = await client.getTokenHourlyPriceHistory('ALOT');
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([
+                    { timestamp: D1_TS, price: 0.041 },
+                    { timestamp: D2_TS, price: 0.042 },
+                ]);
+                expect(apiSpy).toHaveBeenCalledWith(
+                    'get',
+                    ENDPOINTS.INFO_HOURLY_PRICE_HISTORY,
+                    { params: { token: 'ALOT' } }
+                );
+            });
+
+            it('returns Result.fail when _apiCall rejects', async () => {
+                jest.spyOn(client as any, '_apiCall').mockRejectedValueOnce(
+                    new Error('boom')
+                );
+
+                const result = await client.getTokenHourlyPriceHistory('ALOT');
+
+                expect(result.success).toBe(false);
+                expect(result.error).toBeDefined();
+            });
+
+            it('returns Result.fail when token is invalid', async () => {
+                const r = await client.getTokenHourlyPriceHistory('');
+                expect(r.success).toBe(false);
+            });
+
+            it('returns empty array when the API returns an empty list', async () => {
+                jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValueOnce([]);
+
+                const result = await client.getTokenHourlyPriceHistory('ALOT');
+
+                expect(result.success).toBe(true);
+                expect(result.data).toEqual([]);
+            });
+
+            it('shares a cache slot per identical call within TTL', async () => {
+                const apiSpy = jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValue([{ date: D1_ISO, price: '0.04' }]);
+
+                await client.getTokenHourlyPriceHistory('ALOT');
+                await client.getTokenHourlyPriceHistory('ALOT');
+
+                expect(apiSpy).toHaveBeenCalledTimes(1);
+            });
+
+            it('uses a distinct cache slot from getTokenPriceHistory (path-namespaced)', async () => {
+                const apiSpy = jest
+                    .spyOn(client as any, '_apiCall')
+                    .mockResolvedValue([{ date: D1_ISO, price: '0.04' }]);
+
+                await client.getTokenPriceHistory('ALOT');
+                await client.getTokenHourlyPriceHistory('ALOT');
+
+                // Daily and hourly do NOT share a cache slot even with the
+                // same token + opts — the cache key includes the REST path.
+                expect(apiSpy).toHaveBeenCalledTimes(2);
+                expect(apiSpy).toHaveBeenNthCalledWith(
+                    1,
+                    'get',
+                    ENDPOINTS.INFO_PRICE_HISTORY,
+                    { params: { token: 'ALOT' } }
+                );
+                expect(apiSpy).toHaveBeenNthCalledWith(
+                    2,
+                    'get',
+                    ENDPOINTS.INFO_HOURLY_PRICE_HISTORY,
+                    { params: { token: 'ALOT' } }
+                );
+            });
         });
     });
 
@@ -1686,6 +2210,535 @@ describe('TransferClient', () => {
             const result = await client.getChainTokenBalances('Avalanche', ['AVAX']);
             expect(result.success).toBe(false);
             expect(result.error).toContain('Address required');
+        });
+    });
+
+    describe('getCombinedTransfers', () => {
+        // Real backend route is `/api/trading/signed/transferscombined` (signed).
+        // Verified empirically via OPTIONS preflight: the `/privapi/...` variant
+        // 404s while `/api/trading/signed/transferscombined` 204s. Response
+        // shape is `{ count, rows: DBTransfer[] }` with snake_case fields and
+        // numeric enums for `status` / `action_type` / `bridge`. Quantities and
+        // fees arrive as already-display-decimal numeric strings (the official
+        // frontend reads them straight through Big.js with no decimals divide).
+        beforeEach(() => {
+            // Disable retry so rejection from the spy doesn't get retried.
+            client.config.retryEnabled = false;
+            // Default x-signature header so _getAuthHeaders doesn't try to
+            // re-sign during the test; individual tests may override.
+            (client as any)._cachedSignature = `${mockAddress}:sig`;
+        });
+
+        const ROW_DEPOSIT_COMPLETED = {
+            status: 0, // COMPLETED
+            traderaddress: '0xtrader',
+            action_type: 1, // DEPOSITED
+            bridge: 0, // LAYER0
+            bridge_url: 'https://layerzeroscan.com/tx/0xsrc',
+            nonce: 42,
+            symbol: 'USDC',
+            quantity: '100.5',
+            fee: '0.001',
+            source_env: 'production-multi-avax',
+            source_chain_id: 43114,
+            source_tx: '0xsrc',
+            source_ts: '2026-05-01T00:00:00.000Z',
+            target_env: 'subnet',
+            target_chain_id: 12345,
+            target_tx: '0xtgt',
+            target_ts: '2026-05-01T00:01:00.000Z',
+            nbrof_rows: '17',
+        };
+
+        const ROW_GAS_INFLIGHT = {
+            status: 1, // INFLIGHT
+            traderaddress: '0xtrader',
+            action_type: 8, // ADD_GAS
+            bridge: -1, // NATIVE
+            bridge_url: '',
+            nonce: -1,
+            symbol: 'ALOT',
+            quantity: '5.0',
+            fee: '0',
+            source_env: 'subnet',
+            source_chain_id: 12345,
+            source_tx: '0xgas',
+            source_ts: '2026-05-02T00:00:00.000Z',
+            target_env: null,
+            target_chain_id: null,
+            target_tx: null,
+            target_ts: null,
+            nbrof_rows: '17',
+        };
+
+        it('returns Result.fail when no signer is configured', async () => {
+            client.signer = undefined as any;
+            const result = await client.getCombinedTransfers();
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Signer not configured');
+        });
+
+        it('returns canonical Transfer[] normalized from the {count, rows} envelope', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({
+                    count: 2,
+                    rows: [ROW_DEPOSIT_COMPLETED, ROW_GAS_INFLIGHT],
+                });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual([
+                {
+                    actionType: 'DEPOSITED',
+                    status: 'COMPLETED',
+                    symbol: 'USDC',
+                    quantity: 100.5,
+                    fee: 0.001,
+                    traderAddress: '0xtrader',
+                    bridge: 'LAYER0',
+                    bridgeUrl: 'https://layerzeroscan.com/tx/0xsrc',
+                    nonce: 42,
+                    sourceEnv: 'production-multi-avax',
+                    sourceChainId: 43114,
+                    sourceTx: '0xsrc',
+                    sourceTs: 1777593600, // 2026-05-01T00:00:00.000Z as unix seconds
+                    targetEnv: 'subnet',
+                    targetChainId: 12345,
+                    targetTx: '0xtgt',
+                    targetTs: 1777593660, // 2026-05-01T00:01:00.000Z as unix seconds
+                },
+                {
+                    actionType: 'ADD_GAS',
+                    status: 'INFLIGHT',
+                    symbol: 'ALOT',
+                    quantity: 5,
+                    fee: 0,
+                    traderAddress: '0xtrader',
+                    bridge: 'NATIVE',
+                    bridgeUrl: '',
+                    nonce: -1,
+                    sourceEnv: 'subnet',
+                    sourceChainId: 12345,
+                    sourceTx: '0xgas',
+                    sourceTs: 1777680000, // 2026-05-02T00:00:00.000Z as unix seconds
+                    targetEnv: null,
+                    targetChainId: null,
+                    targetTx: null,
+                    targetTs: null,
+                },
+            ]);
+
+            // Timestamps are coerced to unix seconds (numbers, not ISO strings).
+            expect(typeof result.data![0].sourceTs).toBe('number');
+            expect(typeof result.data![0].targetTs).toBe('number');
+            // A row with no target leg yields targetTs === null alongside the
+            // other nullable target-* fields.
+            expect(typeof result.data![1].sourceTs).toBe('number');
+            expect(result.data![1].targetTs).toBeNull();
+            expect(result.data![1].targetEnv).toBeNull();
+            expect(result.data![1].targetChainId).toBeNull();
+            expect(result.data![1].targetTx).toBeNull();
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.TRADING_COMBINED_TRANSFERS,
+                expect.objectContaining({
+                    headers: expect.objectContaining({ 'x-signature': `${mockAddress}:sig` }),
+                    params: expect.objectContaining({
+                        itemsperpage: 100,
+                        pageno: 1,
+                    }),
+                })
+            );
+        });
+
+        it('accepts a top-level array response shape as a fallback', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce([
+                ROW_DEPOSIT_COMPLETED,
+            ]);
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toHaveLength(1);
+            expect(result.data![0].symbol).toBe('USDC');
+        });
+
+        it('translates limit/offset -> itemsperpage/pageno and fromTs/toTs -> periodfrom/periodto', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({ count: 0, rows: [] });
+
+            await client.getCombinedTransfers({
+                symbol: 'usdc', // lowercase to verify normalization
+                fromTs: 1777593600, // 2026-05-01T00:00:00Z unix seconds
+                toTs: 1780185600, // 2026-05-31T00:00:00Z unix seconds
+                limit: 50,
+                offset: 100, // floor(100 / 50) + 1 = page 3
+            });
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.TRADING_COMBINED_TRANSFERS,
+                expect.objectContaining({
+                    params: {
+                        itemsperpage: 50,
+                        pageno: 3,
+                        symbol: 'USDC',
+                        // fromTs/toTs (unix seconds) are converted to ISO-8601
+                        // strings — the backend's periodfrom/periodto reject raw
+                        // unix integers with "ISO Date format problem".
+                        periodfrom: new Date(1777593600 * 1000).toISOString(),
+                        periodto: new Date(1780185600 * 1000).toISOString(),
+                    },
+                })
+            );
+        });
+
+        it('defaults to itemsperpage=100 and pageno=1 when no opts supplied', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({ count: 0, rows: [] });
+
+            await client.getCombinedTransfers();
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.TRADING_COMBINED_TRANSFERS,
+                expect.objectContaining({
+                    params: { itemsperpage: 100, pageno: 1 },
+                })
+            );
+        });
+
+        it('caches per (address, opts) — repeated identical calls share one fetch', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValue({ count: 0, rows: [] });
+
+            await client.getCombinedTransfers();
+            await client.getCombinedTransfers();
+
+            expect(apiSpy).toHaveBeenCalledTimes(1);
+        });
+
+        it('uses distinct cache slots per opts tuple', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValue({ count: 0, rows: [] });
+
+            await client.getCombinedTransfers();
+            await client.getCombinedTransfers({ symbol: 'USDC' });
+            await client.getCombinedTransfers({ offset: 100 }); // maps to a different page
+
+            expect(apiSpy).toHaveBeenCalledTimes(3);
+        });
+
+        it('returns Result.fail when _apiCall rejects', async () => {
+            jest.spyOn(client as any, '_apiCall').mockRejectedValueOnce(
+                new Error('upstream down')
+            );
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(false);
+            expect(result.error).toBeDefined();
+        });
+
+        it('returns an empty array when the API returns an empty rows list', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 0,
+                rows: [],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual([]);
+        });
+
+        it('skips malformed rows that are missing required fields', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 3,
+                rows: [
+                    ROW_DEPOSIT_COMPLETED,
+                    { status: 0 }, // missing nearly everything
+                    null, // not even an object
+                ],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toHaveLength(1);
+            expect(result.data![0].symbol).toBe('USDC');
+        });
+
+        it('skips rows whose action_type or status is not a known enum value', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 2,
+                rows: [
+                    { ...ROW_DEPOSIT_COMPLETED, action_type: 999 },
+                    { ...ROW_DEPOSIT_COMPLETED, status: 999 },
+                ],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual([]);
+        });
+
+        it('falls back to BRIDGES.NATIVE-like label when bridge enum is unrecognised', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 1,
+                rows: [{ ...ROW_DEPOSIT_COMPLETED, bridge: 999 }],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toHaveLength(1);
+            // Unknown bridge id is mapped to the catch-all `NATIVE` label —
+            // the row is still returned because action_type + status are valid.
+            expect(result.data![0].bridge).toBe('NATIVE');
+        });
+
+        it('tolerates a non-array `rows` field by returning empty', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 0,
+                rows: 'not-an-array',
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual([]);
+        });
+
+        it('returns Result.fail when the response is neither object nor array', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce(
+                'just a string'
+            );
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(false);
+            expect(result.error).toBeDefined();
+        });
+
+        it('reuses _getAuthHeaders to attach the x-signature header', async () => {
+            // Force fresh sign by clearing the cached header and config.
+            (client as any)._cachedSignature = undefined;
+            mockSigner.signMessage = jest.fn().mockResolvedValue('0xdeadbeef');
+
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValueOnce({ count: 0, rows: [] });
+
+            await client.getCombinedTransfers();
+
+            expect(apiSpy).toHaveBeenCalledWith(
+                'get',
+                ENDPOINTS.TRADING_COMBINED_TRANSFERS,
+                expect.objectContaining({
+                    headers: expect.objectContaining({
+                        'x-signature': `${mockAddress}:0xdeadbeef`,
+                    }),
+                })
+            );
+        });
+
+        it('uses distinct cache slots per signer address', async () => {
+            const apiSpy = jest
+                .spyOn(client as any, '_apiCall')
+                .mockResolvedValue({ count: 0, rows: [] });
+
+            await client.getCombinedTransfers();
+            mockSigner.getAddress.mockResolvedValueOnce('0xOtherUser');
+            await client.getCombinedTransfers();
+
+            expect(apiSpy).toHaveBeenCalledTimes(2);
+        });
+
+        it('returns Result.fail when signer.getAddress rejects', async () => {
+            mockSigner.getAddress.mockRejectedValueOnce(new Error('locked'));
+            const result = await client.getCombinedTransfers();
+            expect(result.success).toBe(false);
+            expect(result.error).toBeDefined();
+        });
+
+        it('accepts numeric quantity / fee values as a forward-compat fallback', async () => {
+            // Backend currently emits Big-strings, but the SDK also
+            // accepts plain numbers in case the wire shape ever flips.
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 1,
+                rows: [{ ...ROW_DEPOSIT_COMPLETED, quantity: 200, fee: 0.5 }],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toHaveLength(1);
+            expect(result.data![0].quantity).toBe(200);
+            expect(result.data![0].fee).toBe(0.5);
+        });
+
+        it('drops rows whose numeric quantity is not a finite non-negative value', async () => {
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 3,
+                rows: [
+                    { ...ROW_DEPOSIT_COMPLETED, quantity: -1 },
+                    { ...ROW_DEPOSIT_COMPLETED, quantity: Number.POSITIVE_INFINITY },
+                    { ...ROW_DEPOSIT_COMPLETED, quantity: Number.NaN },
+                ],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual([]);
+        });
+
+        it('drops rows whose status/symbol fields are the wrong type', async () => {
+            // Status as a string (instead of number) → row dropped.
+            // Symbol as a number (instead of string) → row dropped.
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 2,
+                rows: [
+                    { ...ROW_DEPOSIT_COMPLETED, status: 'COMPLETED' as any },
+                    { ...ROW_DEPOSIT_COMPLETED, symbol: 999 as any },
+                ],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual([]);
+        });
+
+        it('drops rows whose quantity is an empty / non-parseable string', async () => {
+            // Empty string → null → row dropped.
+            // Non-numeric string → parseFloat returns NaN → null → dropped.
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 2,
+                rows: [
+                    { ...ROW_DEPOSIT_COMPLETED, quantity: '   ' },
+                    { ...ROW_DEPOSIT_COMPLETED, quantity: 'not-a-number' },
+                ],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toEqual([]);
+        });
+
+        it('fills in safe defaults when optional fields have wrong types or are missing', async () => {
+            // Minimal row — only the required `action_type` + `status` +
+            // `symbol` + `quantity` are well-typed; every other field is
+            // either missing, the wrong type, or has an unknown enum
+            // value. The normalizer should still emit a row with the
+            // sentinel defaults documented on the Transfer type.
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 1,
+                rows: [
+                    {
+                        action_type: 1, // DEPOSITED
+                        status: 0, // COMPLETED
+                        symbol: 'USDC',
+                        quantity: '100',
+                        // fee missing → defaults to 0
+                        // traderaddress wrong type → defaults to ''
+                        traderaddress: 999,
+                        // bridge missing → defaults to -1 / NATIVE
+                        // bridge_url wrong type → defaults to ''
+                        bridge_url: null,
+                        // nonce missing → defaults to -1
+                        // source_env wrong type → defaults to ''
+                        source_env: 5,
+                        // source_chain_id missing → defaults to 0
+                        // source_tx missing → defaults to ''
+                        // source_ts missing → coerces to 0 (non-null sentinel)
+                        // target_env / target_chain_id / target_tx wrong
+                        // type → default to null; target_ts is a bare number
+                        // → coerced to unix seconds (11)
+                        target_env: 7,
+                        target_chain_id: 'not-a-number',
+                        target_tx: 9,
+                        target_ts: 11,
+                    },
+                ],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            expect(result.data).toHaveLength(1);
+            expect(result.data![0]).toEqual({
+                actionType: 'DEPOSITED',
+                status: 'COMPLETED',
+                symbol: 'USDC',
+                quantity: 100,
+                fee: 0,
+                traderAddress: '',
+                bridge: 'NATIVE',
+                bridgeUrl: '',
+                nonce: -1,
+                sourceEnv: '',
+                sourceChainId: 0,
+                sourceTx: '',
+                sourceTs: 0,
+                targetEnv: null,
+                targetChainId: null,
+                targetTx: null,
+                targetTs: 11,
+            });
+        });
+
+        it('coerces source_ts/target_ts across ISO-string, numeric, and unparseable inputs', async () => {
+            // Exercises both branches of _coerceTransferTs:
+            //   - source_ts: numeric-string (non-ISO) → _coerceTimestampSeconds path
+            //   - target_ts: ISO-8601 string → Date.parse path
+            // and the missing/unparseable fallbacks on a second row.
+            jest.spyOn(client as any, '_apiCall').mockResolvedValueOnce({
+                count: 3,
+                rows: [
+                    {
+                        ...ROW_DEPOSIT_COMPLETED,
+                        source_ts: '1777593600', // numeric string (seconds)
+                        target_ts: '2026-05-01T00:01:00.000Z', // ISO string
+                    },
+                    {
+                        ...ROW_GAS_INFLIGHT,
+                        source_ts: 'not-a-date', // unparseable string → 0 sentinel
+                        target_ts: null, // absent target leg → null
+                    },
+                    {
+                        ...ROW_GAS_INFLIGHT,
+                        source_ts: '   ', // whitespace-only string → 0 sentinel
+                        target_ts: 1777680000, // bare numeric (seconds)
+                    },
+                ],
+            });
+
+            const result = await client.getCombinedTransfers();
+
+            expect(result.success).toBe(true);
+            // Numeric-string seconds pass straight through.
+            expect(result.data![0].sourceTs).toBe(1777593600);
+            // ISO string is parsed to unix seconds.
+            expect(result.data![0].targetTs).toBe(1777593660);
+            // Unparseable source string falls back to the 0 sentinel.
+            expect(result.data![1].sourceTs).toBe(0);
+            // Null target leg stays null.
+            expect(result.data![1].targetTs).toBeNull();
+            // Whitespace-only string is treated as empty → 0 sentinel;
+            // bare numeric target_ts passes through _coerceTimestampSeconds.
+            expect(result.data![2].sourceTs).toBe(0);
+            expect(result.data![2].targetTs).toBe(1777680000);
         });
     });
 
