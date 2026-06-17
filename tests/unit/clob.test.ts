@@ -2807,7 +2807,7 @@ describe('order helper branch coverage', () => {
 
     it('_enumToName and _toHexIdentifier cover bigint/Uint8Array/fallback branches', () => {
         expect((client as any)._enumToName(1n, { 1: 'LIMIT' })).toBe('LIMIT');
-        expect((client as any)._enumToName(7, { 1: 'LIMIT' })).toBe(7);
+        expect((client as any)._enumToName(7, { 1: 'LIMIT' })).toBe('UNKNOWN(7)');
         expect((client as any)._enumToName('BUY', { 0: 'BUY' })).toBe('BUY');
 
         expect((client as any)._toHexIdentifier(new Uint8Array([0xab, 0xcd]))).toBe('0xabcd');
@@ -2926,8 +2926,8 @@ describe('order helper branch coverage', () => {
         expect(result.success).toBe(false);
         expect(result.error).toContain("Order field 'createBlock' must be an integer block number.");
     });
-    it('_enumToName falls back to numeric values for unmapped bigint enums', () => {
-        expect((client as any)._enumToName(99n, { 0: 'ZERO' })).toBe(99);
+    it('_enumToName maps unmapped bigint enums to an UNKNOWN sentinel', () => {
+        expect((client as any)._enumToName(99n, { 0: 'ZERO' })).toBe('UNKNOWN(99)');
     });
 
     it('_resolveOrderReference stringifies non-Error conversion failures', async () => {
@@ -3064,10 +3064,10 @@ describe('order helper branch coverage', () => {
             timestamp: '2024-01-03T00:00:00.000Z',
         });
         expect(order.clientOrderId).toBe(VALID_CLIENT_ID);
-        expect(order.side).toBe('9');
-        expect(order.type1).toBe('8');
-        expect(order.type2).toBe('7');
-        expect(order.status).toBe('7');
+        expect(order.side).toBe('UNKNOWN(9)');
+        expect(order.type1).toBe('UNKNOWN(8)');
+        expect(order.type2).toBe('UNKNOWN(7)');
+        expect(order.status).toBe('CANCEL_REJECT');
         expect(order.createTs).toBe('2024-01-03T00:00:00.000Z');
         expect(order.updateTs).toBeNull();
     });
@@ -3202,10 +3202,10 @@ describe('order helper branch coverage', () => {
         const result = await client.getOrderByClientId(VALID_CLIENT_ID);
         expect(result.success).toBe(true);
         expect(result.data!.traderAddress).toBe('0');
-        expect(result.data!.side).toBe('99');
-        expect(result.data!.type1).toBe('98');
-        expect(result.data!.type2).toBe('97');
-        expect(result.data!.status).toBe('7');
+        expect(result.data!.side).toBe('UNKNOWN(99)');
+        expect(result.data!.type1).toBe('UNKNOWN(98)');
+        expect(result.data!.type2).toBe('UNKNOWN(97)');
+        expect(result.data!.status).toBe('CANCEL_REJECT');
     });
 
     it('formats Error throws in _formatOrderData via .message', async () => {
@@ -3266,10 +3266,10 @@ describe('order helper branch coverage', () => {
         );
         expect(result.success).toBe(true);
         expect(result.data!.traderAddress).toBe('0');
-        expect(result.data!.side).toBe('99');
-        expect(result.data!.type1).toBe('98');
-        expect(result.data!.type2).toBe('97');
-        expect(result.data!.status).toBe('96');
+        expect(result.data!.side).toBe('UNKNOWN(99)');
+        expect(result.data!.type1).toBe('UNKNOWN(98)');
+        expect(result.data!.type2).toBe('UNKNOWN(97)');
+        expect(result.data!.status).toBe('UNKNOWN(96)');
     });
 });
 

@@ -23,6 +23,13 @@ import { BaseClient } from './base.js';
 import { Result } from '../utils/result.js';
 import { withInstanceCache } from '../utils/cache.js';
 import {
+    SIDE_NAMES,
+    ORDER_TYPE_NAMES,
+    TIME_IN_FORCE_NAMES,
+    ORDER_STATUS_NAMES,
+    enumIntToName,
+} from './orderTypes.js';
+import {
     Big,
     toWei,
     fromWei,
@@ -157,13 +164,10 @@ export class CLOBClient extends BaseClient {
         }
 
         private _enumToName(value: unknown, mapping: Record<number, string>): unknown {
-            if (typeof value === 'bigint') {
-                return mapping[Number(value)] ?? Number(value);
-            }
-            if (typeof value === 'number') {
-                return mapping[value] ?? value;
-            }
-            return value;
+            // Delegates to the shared order-type model so read and write paths
+            // share one mapping; unknown integers become an explicit
+            // "UNKNOWN(<n>)" sentinel rather than a fabricated label.
+            return enumIntToName(value, mapping);
         }
 
         private _toHexIdentifier(value: unknown): string {
@@ -1033,23 +1037,10 @@ export class CLOBClient extends BaseClient {
          * Maps lowercase/snake_case API fields to camelCase SDK fields.
          */
         private _transformOrderFromAPI(order: any): Order {
-            const side = this._enumToName(order.side, { 0: 'BUY', 1: 'SELL' });
-            const type1 = this._enumToName(order.type1 ?? order.type, {
-                0: 'MARKET',
-                1: 'LIMIT',
-                2: 'STOP',
-                3: 'STOPLIMIT',
-            });
-            const type2 = this._enumToName(order.type2, { 0: 'GTC', 1: 'FOK', 2: 'IOC', 3: 'PO' });
-            const status = this._enumToName(order.status, {
-                0: 'NEW',
-                1: 'REJECTED',
-                2: 'PARTIAL',
-                3: 'FILLED',
-                4: 'CANCELED',
-                5: 'EXPIRED',
-                6: 'KILLED',
-            });
+            const side = this._enumToName(order.side, SIDE_NAMES);
+            const type1 = this._enumToName(order.type1 ?? order.type, ORDER_TYPE_NAMES);
+            const type2 = this._enumToName(order.type2, TIME_IN_FORCE_NAMES);
+            const status = this._enumToName(order.status, ORDER_STATUS_NAMES);
             const pair = this._resolvePairFromOrder(order) ?? this._findPairInfoByTradePairId(order.tradePairId)?.pair;
             const tradePairId = this._toHexIdentifier(
                 order.tradePairId ?? order.tradepairid ?? order.trade_pair_id ?? this._resolveTradePairIdFromPair(pair)
@@ -1787,23 +1778,10 @@ export class CLOBClient extends BaseClient {
                     return Result.fail('Could not determine pair from order data.');
                 }
 
-                const side = this._enumToName(orderData[9], { 0: 'BUY', 1: 'SELL' });
-                const type1 = this._enumToName(orderData[10], {
-                    0: 'MARKET',
-                    1: 'LIMIT',
-                    2: 'STOP',
-                    3: 'STOPLIMIT',
-                });
-                const type2 = this._enumToName(orderData[11], { 0: 'GTC', 1: 'FOK', 2: 'IOC', 3: 'PO' });
-                const status = this._enumToName(orderData[12], {
-                    0: 'NEW',
-                    1: 'REJECTED',
-                    2: 'PARTIAL',
-                    3: 'FILLED',
-                    4: 'CANCELED',
-                    5: 'EXPIRED',
-                    6: 'KILLED',
-                });
+                const side = this._enumToName(orderData[9], SIDE_NAMES);
+                const type1 = this._enumToName(orderData[10], ORDER_TYPE_NAMES);
+                const type2 = this._enumToName(orderData[11], TIME_IN_FORCE_NAMES);
+                const status = this._enumToName(orderData[12], ORDER_STATUS_NAMES);
 
                 const traderAddress =
                     typeof orderData[8] === 'string' && orderData[8]
