@@ -1555,6 +1555,110 @@ describe('CLOBClient', () => {
          });
     });
 
+    describe('order modifiers (timeInForce + stp)', () => {
+        it('addOrder encodes timeInForce + stp into the struct', async () => {
+            const result = await client.addOrder({
+                pair: 'AVAX/USDC', side: 'SELL', type: 'LIMIT', amount: 10, price: 20,
+                timeInForce: 'PO', stp: 'CANCEL_MAKER',
+            });
+            expect(result.success).toBe(true);
+            const struct = mockContract.addNewOrder.mock.calls[0][0];
+            expect(struct.type1).toBe(1); // LIMIT
+            expect(struct.type2).toBe(3); // PO
+            expect(struct.stp).toBe(1); // CANCEL_MAKER
+        });
+
+        it('addOrder default modifiers stay GTC / CANCEL_TAKER', async () => {
+            const result = await client.addOrder({
+                pair: 'AVAX/USDC', side: 'BUY', amount: 10, price: 20,
+            });
+            expect(result.success).toBe(true);
+            const struct = mockContract.addNewOrder.mock.calls[0][0];
+            expect(struct.type2).toBe(0);
+            expect(struct.stp).toBe(0);
+        });
+
+        it('addOrder accepts a MARKET order with default (GTC) modifiers', async () => {
+            const result = await client.addOrder({
+                pair: 'AVAX/USDC', side: 'BUY', type: 'MARKET', amount: 10,
+            });
+            expect(result.success).toBe(true);
+            const struct = mockContract.addNewOrder.mock.calls[0][0];
+            expect(struct.type1).toBe(0); // MARKET
+            expect(struct.price).toBe(0n);
+        });
+
+        it('addOrder rejects an invalid timeInForce before sending', async () => {
+            const result = await client.addOrder({
+                pair: 'AVAX/USDC', side: 'BUY', amount: 10, price: 20, timeInForce: 'FAST',
+            });
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('timeInForce');
+            expect(mockContract.addNewOrder).not.toHaveBeenCalled();
+        });
+
+        it('addOrder rejects an invalid stp before sending', async () => {
+            const result = await client.addOrder({
+                pair: 'AVAX/USDC', side: 'BUY', amount: 10, price: 20, stp: 'BOGUS',
+            });
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('stp');
+            expect(mockContract.addNewOrder).not.toHaveBeenCalled();
+        });
+
+        it('addOrderList alias forwards to addLimitOrderList with per-order modifiers', async () => {
+            const result = await client.addOrderList([
+                { pair: 'AVAX/USDC', side: 'BUY', amount: 10, price: 20, timeInForce: 'IOC' },
+                { pair: 'AVAX/USDC', side: 'SELL', amount: 10, type: 'MARKET', stp: 'CANCEL_BOTH' },
+            ]);
+            expect(result.success).toBe(true);
+            const tuples = mockContract.addOrderList.mock.calls[0][0];
+            expect(tuples[0][7]).toBe(2); // IOC
+            expect(tuples[1][6]).toBe(0); // MARKET
+            expect(tuples[1][8]).toBe(2); // CANCEL_BOTH
+        });
+
+        it('addLimitOrderList rejects an invalid order_type in any entry', async () => {
+            const result = await client.addLimitOrderList([
+                { pair: 'AVAX/USDC', side: 'BUY', amount: 10, price: 20 },
+                { pair: 'AVAX/USDC', side: 'BUY', amount: 10, price: 20, type: 'STOP' as any },
+            ]);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('MARKET'); // rejected by validateOrderParams
+            expect(mockContract.addOrderList).not.toHaveBeenCalled();
+        });
+
+        it('addLimitOrderList rejects an invalid timeInForce in any entry', async () => {
+            const result = await client.addLimitOrderList([
+                { pair: 'AVAX/USDC', side: 'BUY', amount: 10, price: 20, timeInForce: 'FAST' },
+            ]);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('timeInForce');
+        });
+
+        it('cancelAddList rejects an invalid order_type in a replacement', async () => {
+            const reps = [{ order_id: VALID_ORDER_ID, pair: 'AVAX/USDC', side: 'SELL', price: 10, amount: 10, order_type: 'STOP' }];
+            const result = await client.cancelAddList(reps);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('order type');
+        });
+
+        it('cancelAddList rejects an invalid timeInForce in a replacement', async () => {
+            const reps = [{ order_id: VALID_ORDER_ID, pair: 'AVAX/USDC', side: 'SELL', price: 10, amount: 10, timeInForce: 'FAST' }];
+            const result = await client.cancelAddList(reps);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('timeInForce');
+        });
+
+        it('cancelAddList rejects a LIMIT replacement with no price', async () => {
+            // default order_type is LIMIT, which requires a price (validateOrderCombo)
+            const reps = [{ order_id: VALID_ORDER_ID, pair: 'AVAX/USDC', side: 'SELL', amount: 10 }];
+            const result = await client.cancelAddList(reps);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('LIMIT orders require a price');
+        });
+    });
+
 
     describe('addLimitOrderList', () => {
          it('should add multiple orders', async () => {

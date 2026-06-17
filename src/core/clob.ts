@@ -1494,11 +1494,9 @@ export class CLOBClient extends BaseClient {
                     const pairData = this.pairs[pair];
                     const sideEnum = (order.side.toUpperCase() === 'BUY') ? 0 : 1;
 
-                    const typeRes = parseOrderType(order.type ?? 'LIMIT');
-                    if (!typeRes.success) {
-                        return Result.fail(typeRes.error!);
-                    }
-                    const type1Enum = typeRes.data!;
+                    // order.type is already constrained to LIMIT|MARKET by
+                    // validateOrderParams above.
+                    const type1Enum = order.type === 'MARKET' ? 0 : 1;
 
                     const norm = this._normalizeOrderAmounts(order.price, order.amount, pairData);
                     if (!norm.success) {
