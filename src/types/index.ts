@@ -46,6 +46,10 @@ export interface OrderRequest {
   amount: number; // Display units
   price?: number; // Display units, required for LIMIT
   type?: 'LIMIT' | 'MARKET';
+  // Time-in-force (type2). Default 'GTC'. Aliases like 'POST_ONLY' accepted.
+  timeInForce?: 'GTC' | 'FOK' | 'IOC' | 'PO' | string;
+  // Self-trade-prevention mode (stp). Default 'CANCEL_TAKER'.
+  stp?: 'CANCEL_TAKER' | 'CANCEL_MAKER' | 'CANCEL_BOTH' | 'CANCEL_NONE' | string;
 }
 
 export interface Order {

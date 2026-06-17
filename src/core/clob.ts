@@ -28,6 +28,9 @@ import {
     TIME_IN_FORCE_NAMES,
     ORDER_STATUS_NAMES,
     enumIntToName,
+    parseTimeInForce,
+    parseStp,
+    validateOrderCombo,
 } from './orderTypes.js';
 import {
     Big,
@@ -168,6 +171,34 @@ export class CLOBClient extends BaseClient {
             // share one mapping; unknown integers become an explicit
             // "UNKNOWN(<n>)" sentinel rather than a fabricated label.
             return enumIntToName(value, mapping);
+        }
+
+        /**
+         * Resolve and validate (timeInForce, stp) for an order. Returns the
+         * integer type2/stp values or a failure describing the invalid
+         * modifier / combination. Shared by every write path so the order-type
+         * matrix is enforced uniformly. Defaults preserve prior behavior
+         * (GTC / CANCEL_TAKER).
+         */
+        private _resolveOrderModifiers(
+            type1Enum: number,
+            timeInForce: unknown,
+            stp: unknown,
+            hasPrice: boolean
+        ): Result<{ type2: number; stp: number }> {
+            const tif = parseTimeInForce(timeInForce ?? 'GTC');
+            if (!tif.success) {
+                return Result.fail(tif.error!);
+            }
+            const stpRes = parseStp(stp ?? 'CANCEL_TAKER');
+            if (!stpRes.success) {
+                return Result.fail(stpRes.error!);
+            }
+            const combo = validateOrderCombo(type1Enum, tif.data!, hasPrice);
+            if (!combo.success) {
+                return Result.fail(combo.error!);
+            }
+            return Result.ok({ type2: tif.data!, stp: stpRes.data! });
         }
 
         private _toHexIdentifier(value: unknown): string {
@@ -814,6 +845,17 @@ export class CLOBClient extends BaseClient {
                 
                 const sideEnum = req.side === 'BUY' ? 0 : 1;
                 const typeEnum = req.type === 'MARKET' ? 0 : 1;
+
+                const mods = this._resolveOrderModifiers(
+                    typeEnum,
+                    req.timeInForce,
+                    req.stp,
+                    !!normPrice
+                );
+                if (!mods.success) {
+                    return Result.fail(mods.error!);
+                }
+
                 const address = await this.signer.getAddress();
 
                 const orderStruct = {
@@ -824,8 +866,8 @@ export class CLOBClient extends BaseClient {
                     traderaddress: address,
                     side: sideEnum,
                     type1: typeEnum,
-                    type2: 0,
-                    stp: 0
+                    type2: mods.data!.type2,
+                    stp: mods.data!.stp,
                 };
 
                 return await this._withL1TradePairsContract(async (contract) => {
