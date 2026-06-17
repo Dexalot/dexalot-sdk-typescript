@@ -28,6 +28,7 @@ import {
     TIME_IN_FORCE_NAMES,
     ORDER_STATUS_NAMES,
     enumIntToName,
+    parseOrderType,
     parseTimeInForce,
     parseStp,
     validateOrderCombo,
@@ -1493,11 +1494,27 @@ export class CLOBClient extends BaseClient {
                     const pairData = this.pairs[pair];
                     const sideEnum = (order.side.toUpperCase() === 'BUY') ? 0 : 1;
 
+                    const typeRes = parseOrderType(order.type ?? 'LIMIT');
+                    if (!typeRes.success) {
+                        return Result.fail(typeRes.error!);
+                    }
+                    const type1Enum = typeRes.data!;
+
                     const norm = this._normalizeOrderAmounts(order.price, order.amount, pairData);
                     if (!norm.success) {
                         return Result.fail(norm.error!);
                     }
                     const { price: normPrice, amount: normAmount } = norm.data!;
+
+                    const mods = this._resolveOrderModifiers(
+                        type1Enum,
+                        order.timeInForce,
+                        order.stp,
+                        !!normPrice
+                    );
+                    if (!mods.success) {
+                        return Result.fail(mods.error!);
+                    }
 
                     const priceWei = normPrice ? toWei(normPrice, pairData.quote_decimals) : 0n;
                     const qtyWei = toWei(normAmount, pairData.base_decimals);
@@ -1512,9 +1529,9 @@ export class CLOBClient extends BaseClient {
                         qtyWei,
                         await this.signer.getAddress(),
                         sideEnum,
-                        1,
-                        0,
-                        0
+                        type1Enum,
+                        mods.data!.type2,
+                        mods.data!.stp
                     ]);
                 }
 
@@ -1545,6 +1562,19 @@ export class CLOBClient extends BaseClient {
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'placing batch orders'));
             }
+        }
+
+        /**
+         * Alias for {@link addLimitOrderList}. The batch path accepts mixed
+         * order types (per-order `type` / `timeInForce` / `stp`), so this name
+         * reads more accurately than the historical `addLimitOrderList`, which
+         * is retained for backward compatibility.
+         */
+        public async addOrderList(
+            orders: OrderRequest[],
+            waitForReceipt: boolean = true
+        ): Promise<Result<{ txHash: string; clientOrderIds: string[]; operation: string }>> {
+            return this.addLimitOrderList(orders, waitForReceipt);
         }
 
         public async replaceOrder(
@@ -1747,11 +1777,27 @@ export class CLOBClient extends BaseClient {
                         sideEnum = (side.toUpperCase() === 'BUY') ? 0 : 1;
                     }
                     
+                    const typeRes = parseOrderType(rep.order_type ?? rep.type ?? 'LIMIT');
+                    if (!typeRes.success) {
+                        return Result.fail(typeRes.error!);
+                    }
+                    const type1Enum = typeRes.data!;
+
                     const norm = this._normalizeOrderAmounts(rep.price, rep.amount, pairData);
                     if (!norm.success) {
                         return Result.fail(norm.error!);
                     }
                     const { price: normPrice, amount: normAmount } = norm.data!;
+
+                    const mods = this._resolveOrderModifiers(
+                        type1Enum,
+                        rep.timeInForce ?? rep.time_in_force,
+                        rep.stp,
+                        !!normPrice
+                    );
+                    if (!mods.success) {
+                        return Result.fail(mods.error!);
+                    }
 
                     const priceWei = normPrice ? toWei(normPrice, pairData.quote_decimals) : 0n;
                     const qtyWei = toWei(normAmount, pairData.base_decimals);
@@ -1765,9 +1811,9 @@ export class CLOBClient extends BaseClient {
                         qtyWei,
                         await this.signer.getAddress(),
                         sideEnum,
-                        1,
-                        0,
-                        0
+                        type1Enum,
+                        mods.data!.type2,
+                        mods.data!.stp
                     ]);
                 }
 

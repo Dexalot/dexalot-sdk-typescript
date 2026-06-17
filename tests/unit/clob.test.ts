@@ -1544,8 +1544,9 @@ describe('CLOBClient', () => {
 
              // Bypass min_trade_amount=1 by using a pair fixture that has no min
              client.pairs['AVAX/USDC'] = { ...client.pairs['AVAX/USDC'], min_trade_amount: 0, max_trade_amount: 0 };
+             // A price-less order must be MARKET (LIMIT requires a price).
              const reps = [
-                 { order_id: VALID_ORDER_ID, pair: 'AVAX/USDC', side: 'SELL', price: 0, amount: 10 },
+                 { order_id: VALID_ORDER_ID, pair: 'AVAX/USDC', side: 'SELL', price: 0, amount: 10, order_type: 'MARKET' },
              ];
              const result = await client.cancelAddList(reps);
              expect(result.success).toBe(true);
