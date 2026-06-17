@@ -23,6 +23,17 @@ import { BaseClient } from './base.js';
 import { Result } from '../utils/result.js';
 import { withInstanceCache } from '../utils/cache.js';
 import {
+    SIDE_NAMES,
+    ORDER_TYPE_NAMES,
+    TIME_IN_FORCE_NAMES,
+    ORDER_STATUS_NAMES,
+    enumIntToName,
+    parseOrderType,
+    parseTimeInForce,
+    parseStp,
+    validateOrderCombo,
+} from './orderTypes.js';
+import {
     Big,
     toWei,
     fromWei,
@@ -157,13 +168,38 @@ export class CLOBClient extends BaseClient {
         }
 
         private _enumToName(value: unknown, mapping: Record<number, string>): unknown {
-            if (typeof value === 'bigint') {
-                return mapping[Number(value)] ?? Number(value);
+            // Delegates to the shared order-type model so read and write paths
+            // share one mapping; unknown integers become an explicit
+            // "UNKNOWN(<n>)" sentinel rather than a fabricated label.
+            return enumIntToName(value, mapping);
+        }
+
+        /**
+         * Resolve and validate (timeInForce, stp) for an order. Returns the
+         * integer type2/stp values or a failure describing the invalid
+         * modifier / combination. Shared by every write path so the order-type
+         * matrix is enforced uniformly. Defaults preserve prior behavior
+         * (GTC / CANCEL_TAKER).
+         */
+        private _resolveOrderModifiers(
+            type1Enum: number,
+            timeInForce: unknown,
+            stp: unknown,
+            hasPrice: boolean
+        ): Result<{ type2: number; stp: number }> {
+            const tif = parseTimeInForce(timeInForce ?? 'GTC');
+            if (!tif.success) {
+                return Result.fail(tif.error!);
             }
-            if (typeof value === 'number') {
-                return mapping[value] ?? value;
+            const stpRes = parseStp(stp ?? 'CANCEL_TAKER');
+            if (!stpRes.success) {
+                return Result.fail(stpRes.error!);
             }
-            return value;
+            const combo = validateOrderCombo(type1Enum, tif.data!, hasPrice);
+            if (!combo.success) {
+                return Result.fail(combo.error!);
+            }
+            return Result.ok({ type2: tif.data!, stp: stpRes.data! });
         }
 
         private _toHexIdentifier(value: unknown): string {
@@ -810,6 +846,17 @@ export class CLOBClient extends BaseClient {
                 
                 const sideEnum = req.side === 'BUY' ? 0 : 1;
                 const typeEnum = req.type === 'MARKET' ? 0 : 1;
+
+                const mods = this._resolveOrderModifiers(
+                    typeEnum,
+                    req.timeInForce,
+                    req.stp,
+                    !!normPrice
+                );
+                if (!mods.success) {
+                    return Result.fail(mods.error!);
+                }
+
                 const address = await this.signer.getAddress();
 
                 const orderStruct = {
@@ -820,8 +867,8 @@ export class CLOBClient extends BaseClient {
                     traderaddress: address,
                     side: sideEnum,
                     type1: typeEnum,
-                    type2: 0,
-                    stp: 0
+                    type2: mods.data!.type2,
+                    stp: mods.data!.stp,
                 };
 
                 return await this._withL1TradePairsContract(async (contract) => {
@@ -1033,23 +1080,10 @@ export class CLOBClient extends BaseClient {
          * Maps lowercase/snake_case API fields to camelCase SDK fields.
          */
         private _transformOrderFromAPI(order: any): Order {
-            const side = this._enumToName(order.side, { 0: 'BUY', 1: 'SELL' });
-            const type1 = this._enumToName(order.type1 ?? order.type, {
-                0: 'MARKET',
-                1: 'LIMIT',
-                2: 'STOP',
-                3: 'STOPLIMIT',
-            });
-            const type2 = this._enumToName(order.type2, { 0: 'GTC', 1: 'FOK', 2: 'IOC', 3: 'PO' });
-            const status = this._enumToName(order.status, {
-                0: 'NEW',
-                1: 'REJECTED',
-                2: 'PARTIAL',
-                3: 'FILLED',
-                4: 'CANCELED',
-                5: 'EXPIRED',
-                6: 'KILLED',
-            });
+            const side = this._enumToName(order.side, SIDE_NAMES);
+            const type1 = this._enumToName(order.type1 ?? order.type, ORDER_TYPE_NAMES);
+            const type2 = this._enumToName(order.type2, TIME_IN_FORCE_NAMES);
+            const status = this._enumToName(order.status, ORDER_STATUS_NAMES);
             const pair = this._resolvePairFromOrder(order) ?? this._findPairInfoByTradePairId(order.tradePairId)?.pair;
             const tradePairId = this._toHexIdentifier(
                 order.tradePairId ?? order.tradepairid ?? order.trade_pair_id ?? this._resolveTradePairIdFromPair(pair)
@@ -1460,11 +1494,25 @@ export class CLOBClient extends BaseClient {
                     const pairData = this.pairs[pair];
                     const sideEnum = (order.side.toUpperCase() === 'BUY') ? 0 : 1;
 
+                    // order.type is already constrained to LIMIT|MARKET by
+                    // validateOrderParams above.
+                    const type1Enum = order.type === 'MARKET' ? 0 : 1;
+
                     const norm = this._normalizeOrderAmounts(order.price, order.amount, pairData);
                     if (!norm.success) {
                         return Result.fail(norm.error!);
                     }
                     const { price: normPrice, amount: normAmount } = norm.data!;
+
+                    const mods = this._resolveOrderModifiers(
+                        type1Enum,
+                        order.timeInForce,
+                        order.stp,
+                        !!normPrice
+                    );
+                    if (!mods.success) {
+                        return Result.fail(mods.error!);
+                    }
 
                     const priceWei = normPrice ? toWei(normPrice, pairData.quote_decimals) : 0n;
                     const qtyWei = toWei(normAmount, pairData.base_decimals);
@@ -1479,9 +1527,9 @@ export class CLOBClient extends BaseClient {
                         qtyWei,
                         await this.signer.getAddress(),
                         sideEnum,
-                        1,
-                        0,
-                        0
+                        type1Enum,
+                        mods.data!.type2,
+                        mods.data!.stp
                     ]);
                 }
 
@@ -1514,6 +1562,29 @@ export class CLOBClient extends BaseClient {
             }
         }
 
+        /**
+         * Alias for {@link addLimitOrderList}. The batch path accepts mixed
+         * order types (per-order `type` / `timeInForce` / `stp`), so this name
+         * reads more accurately than the historical `addLimitOrderList`, which
+         * is retained for backward compatibility.
+         */
+        public async addOrderList(
+            orders: OrderRequest[],
+            waitForReceipt: boolean = true
+        ): Promise<Result<{ txHash: string; clientOrderIds: string[]; operation: string }>> {
+            return this.addLimitOrderList(orders, waitForReceipt);
+        }
+
+        /**
+         * Cancel an existing order and replace it atomically with a new price
+         * and quantity, via the contract's `cancelReplaceOrder`.
+         *
+         * Note: `cancelReplaceOrder` carries only a new price and quantity, so
+         * the replacement **inherits** the original order's `type1`,
+         * `timeInForce` (`type2`) and `stp`. This method therefore exposes no
+         * time-in-force / stp parameters; to change those, cancel the order and
+         * place a new one (e.g. via {@link cancelAddList}).
+         */
         public async replaceOrder(
             orderId: string,
             newPrice: number,
@@ -1714,11 +1785,27 @@ export class CLOBClient extends BaseClient {
                         sideEnum = (side.toUpperCase() === 'BUY') ? 0 : 1;
                     }
                     
+                    const typeRes = parseOrderType(rep.order_type ?? rep.type ?? 'LIMIT');
+                    if (!typeRes.success) {
+                        return Result.fail(typeRes.error!);
+                    }
+                    const type1Enum = typeRes.data!;
+
                     const norm = this._normalizeOrderAmounts(rep.price, rep.amount, pairData);
                     if (!norm.success) {
                         return Result.fail(norm.error!);
                     }
                     const { price: normPrice, amount: normAmount } = norm.data!;
+
+                    const mods = this._resolveOrderModifiers(
+                        type1Enum,
+                        rep.timeInForce ?? rep.time_in_force,
+                        rep.stp,
+                        !!normPrice
+                    );
+                    if (!mods.success) {
+                        return Result.fail(mods.error!);
+                    }
 
                     const priceWei = normPrice ? toWei(normPrice, pairData.quote_decimals) : 0n;
                     const qtyWei = toWei(normAmount, pairData.base_decimals);
@@ -1732,9 +1819,9 @@ export class CLOBClient extends BaseClient {
                         qtyWei,
                         await this.signer.getAddress(),
                         sideEnum,
-                        1,
-                        0,
-                        0
+                        type1Enum,
+                        mods.data!.type2,
+                        mods.data!.stp
                     ]);
                 }
 
@@ -1787,23 +1874,10 @@ export class CLOBClient extends BaseClient {
                     return Result.fail('Could not determine pair from order data.');
                 }
 
-                const side = this._enumToName(orderData[9], { 0: 'BUY', 1: 'SELL' });
-                const type1 = this._enumToName(orderData[10], {
-                    0: 'MARKET',
-                    1: 'LIMIT',
-                    2: 'STOP',
-                    3: 'STOPLIMIT',
-                });
-                const type2 = this._enumToName(orderData[11], { 0: 'GTC', 1: 'FOK', 2: 'IOC', 3: 'PO' });
-                const status = this._enumToName(orderData[12], {
-                    0: 'NEW',
-                    1: 'REJECTED',
-                    2: 'PARTIAL',
-                    3: 'FILLED',
-                    4: 'CANCELED',
-                    5: 'EXPIRED',
-                    6: 'KILLED',
-                });
+                const side = this._enumToName(orderData[9], SIDE_NAMES);
+                const type1 = this._enumToName(orderData[10], ORDER_TYPE_NAMES);
+                const type2 = this._enumToName(orderData[11], TIME_IN_FORCE_NAMES);
+                const status = this._enumToName(orderData[12], ORDER_STATUS_NAMES);
 
                 const traderAddress =
                     typeof orderData[8] === 'string' && orderData[8]

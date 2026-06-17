@@ -8,14 +8,19 @@ export enum OrderType {
   LIMIT = 1,
 }
 
+// Values match the on-chain TradePairs Status enum (ITradePairs.sol):
+// NEW=0 .. KILLED=6, CANCEL_REJECT=7. (A prior revision had these in the wrong
+// order — FILLED=0 / NEW=3 — which disagreed with the contract and with the
+// SDK's own order-read mapping.)
 export enum OrderStatus {
-  FILLED = 0,
-  CANCELED = 1,
+  NEW = 0,
+  REJECTED = 1,
   PARTIAL = 2,
-  NEW = 3,
-  REJECTED = 4,
+  FILLED = 3,
+  CANCELED = 4,
   EXPIRED = 5,
   KILLED = 6,
+  CANCEL_REJECT = 7,
 }
 
 export interface Pair {
@@ -41,6 +46,10 @@ export interface OrderRequest {
   amount: number; // Display units
   price?: number; // Display units, required for LIMIT
   type?: 'LIMIT' | 'MARKET';
+  // Time-in-force (type2). Default 'GTC'. Aliases like 'POST_ONLY' accepted.
+  timeInForce?: 'GTC' | 'FOK' | 'IOC' | 'PO' | string;
+  // Self-trade-prevention mode (stp). Default 'CANCEL_TAKER'.
+  stp?: 'CANCEL_TAKER' | 'CANCEL_MAKER' | 'CANCEL_BOTH' | 'CANCEL_NONE' | string;
 }
 
 export interface Order {

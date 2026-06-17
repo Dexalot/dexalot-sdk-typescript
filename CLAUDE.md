@@ -378,6 +378,37 @@ the other side.
   `toWei(value, decimals)`. Do not reintroduce
   `parseFloat(value.toFixed(N))` rounding in any write path — that is
   silent slippage (a stop at 99.99 silently becoming 99.9).
+- **Order enums live in `core/orderTypes.ts`** (mirrors
+  dexalot-sdk-python `core/order_types.py`): `TimeInForce`,
+  `SelfTradePrevention`, int↔label maps for side/type1/type2/stp/status,
+  alias-aware parsers, and `validateOrderCombo`. Read paths route through
+  `enumIntToName` so the integer↔label mapping cannot drift; unknown ints
+  render as `UNKNOWN(<n>)`. Values verified against the on-chain
+  `TradePairs` contract (`ITradePairs.sol`).
+- **STOP/STOPLIMIT are reserved on-chain but unplaceable**: the contract
+  `Type1` enum is `{MARKET, LIMIT, STOP, STOPLIMIT}`, but STOP/STOPLIMIT are
+  unused (no trigger-price field, never enabled per pair). The write-side
+  `OrderType` enum stays `{MARKET, LIMIT}` (the SDK never originates a stop
+  order) while the `ORDER_TYPE_NAMES` read map keeps all four so reads stay
+  faithful.
+- **`timeInForce` / `stp` default to prior behavior** (`GTC` /
+  `CANCEL_TAKER`): `addOrder` and the per-order dicts in
+  `addLimitOrderList` / `cancelAddList` accept them, replacing the old
+  hardcoded `type2=0`/`stp=0`. `validateOrderCombo` enforces only the
+  contract-faithful rule — `LIMIT` requires a price — because the contract
+  ignores `type2`/price for MARKET (no revert). Do **not** re-add a
+  MARKET-must-be-IOC/FOK check; it rejected the default (GTC) MARKET order.
+- **`replaceOrder` cannot change type/TIF/stp**: `cancelReplaceOrder`
+  carries only price+quantity, so the replacement inherits the original
+  `type1`/`type2`/`stp`. Use `cancelAddList` to change them.
+- **`_sanitizeError` lifts contract revert codes**: it runs
+  `parseRevertReason` (from `src/errors.ts`) to turn `T-XXXX-NN` reverts
+  into `"<code>: <description>"` before sanitizing. The lift is wrapped
+  best-effort so sanitization never itself throws.
+- **`OrderStatus` enum values are contract-ordered** (`NEW=0` …
+  `KILLED=6`, `CANCEL_REJECT=7`). A prior revision had them mis-ordered
+  (`FILLED=0`/`NEW=3`); this was corrected to match `ITradePairs.sol` and
+  the SDK's own read map.
 - **Public market-data endpoints live under `/api/`, not `/privapi/`**:
   most SDK calls hit `/privapi/...`, but `getCandles` and
   `getMarketSnapshot` (and therefore `get24hStats`) hit

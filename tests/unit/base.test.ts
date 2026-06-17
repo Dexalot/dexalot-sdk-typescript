@@ -2133,6 +2133,31 @@ describe('BaseClient', () => {
             expect(res.success).toBe(false);
             expect(res.error).toContain('FQ-015: insufficient liquidity');
         });
+
+        it('_sanitizeError lifts a contract revert reason code to a friendly description', () => {
+            const msg = (client as any)._sanitizeError(
+                new Error('execution reverted: T-FOKF-01'),
+                'placing order'
+            );
+            expect(msg).toContain('T-FOKF-01');
+            expect(msg).toContain('FOK');
+        });
+
+        it('_sanitizeError falls back to plain sanitization if revert lifting throws', () => {
+            // Revert-code lifting is best-effort; if it throws, sanitization
+            // must still return a string (it must never itself throw).
+            const orig = Object.entries;
+            (Object as any).entries = () => {
+                throw new Error('boom');
+            };
+            try {
+                const msg = (client as any)._sanitizeError(new Error('some failure'), 'ctx');
+                expect(typeof msg).toBe('string');
+                expect(msg).toContain('ctx');
+            } finally {
+                Object.entries = orig;
+            }
+        });
     });
 
     describe('HTTP method allowlist on _apiCall', () => {

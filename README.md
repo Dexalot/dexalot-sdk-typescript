@@ -223,6 +223,54 @@ if (result.success) {
 }
 ```
 
+### Order Types & Time-in-Force
+
+CLOB orders are described by three on-chain fields, all optional on `OrderRequest`
+and defaulting to today's behavior:
+
+- **`type`** (`type1`) — `'LIMIT'` (default) or `'MARKET'`.
+- **`timeInForce`** (`type2`) — `'GTC'` (default), `'FOK'`, `'IOC'`, or `'PO'`
+  (Post-Only). Aliases like `'POST_ONLY'` / `'FILL_OR_KILL'` are accepted.
+- **`stp`** (self-trade prevention) — `'CANCEL_TAKER'` (default),
+  `'CANCEL_MAKER'`, `'CANCEL_BOTH'`, or `'CANCEL_NONE'` (contract spellings
+  `'CANCELTAKER'` etc. also accepted).
+
+> Stop / stop-limit orders cannot be **placed**: although the contract `Type1`
+> enum reserves `STOP`/`STOPLIMIT`, they are unused on-chain, so `type` accepts
+> only `MARKET`/`LIMIT`. Order *reads* still label `type1` 2/3 as
+> `STOP`/`STOPLIMIT` for fidelity with the contract enum.
+
+The SDK only pre-validates the rule the contract relies on — a `LIMIT` order
+requires a price — and defers the rest to on-chain reverts (`MARKET` ignores
+`timeInForce`/price; Post-Only, per-pair allowed types, FOK and self-trade are
+enforced on-chain: `T-IVOT-01`, `T-POOA-01`, `T-T2PO-01`, `T-FOKF-01`,
+`T-STPR-01`).
+
+```typescript
+// Limit IOC
+await client.addOrder({ pair: 'AVAX/USDC', side: 'BUY', amount: 1, price: 25, timeInForce: 'IOC' });
+
+// Post-Only (maker-only)
+await client.addOrder({ pair: 'AVAX/USDC', side: 'SELL', amount: 1, price: 25, timeInForce: 'PO' });
+
+// Market BUY (no price)
+await client.addOrder({ pair: 'AVAX/USDC', side: 'BUY', amount: 1, type: 'MARKET' });
+
+// Self-trade prevention
+await client.addOrder({ pair: 'AVAX/USDC', side: 'BUY', amount: 1, price: 25, stp: 'CANCEL_MAKER' });
+
+// Batch with mixed types (addOrderList is an alias for addLimitOrderList)
+await client.addOrderList([
+    { pair: 'AVAX/USDC', side: 'BUY', amount: 1, price: 24, timeInForce: 'PO' },
+    { pair: 'AVAX/USDC', side: 'SELL', amount: 1, type: 'MARKET', timeInForce: 'IOC' },
+]);
+```
+
+`replaceOrder` uses the contract's `cancelReplaceOrder`, which carries only a
+new price and quantity — the replacement **inherits** the original order's
+`type1`/`timeInForce`/`stp`. To change those, cancel and place a new order
+(e.g. via `cancelAddList`).
+
 ## Dependencies
 
 - `ethers>=6.0.0`: Multi-chain blockchain interactions

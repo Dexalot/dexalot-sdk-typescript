@@ -1544,14 +1544,119 @@ describe('CLOBClient', () => {
 
              // Bypass min_trade_amount=1 by using a pair fixture that has no min
              client.pairs['AVAX/USDC'] = { ...client.pairs['AVAX/USDC'], min_trade_amount: 0, max_trade_amount: 0 };
+             // A price-less order must be MARKET (LIMIT requires a price).
              const reps = [
-                 { order_id: VALID_ORDER_ID, pair: 'AVAX/USDC', side: 'SELL', price: 0, amount: 10 },
+                 { order_id: VALID_ORDER_ID, pair: 'AVAX/USDC', side: 'SELL', price: 0, amount: 10, order_type: 'MARKET' },
              ];
              const result = await client.cancelAddList(reps);
              expect(result.success).toBe(true);
              const callArgs = mockContract.cancelAddList.mock.calls[0];
              expect(callArgs[1][0][2]).toBe(0n);  // priceWei
          });
+    });
+
+    describe('order modifiers (timeInForce + stp)', () => {
+        it('addOrder encodes timeInForce + stp into the struct', async () => {
+            const result = await client.addOrder({
+                pair: 'AVAX/USDC', side: 'SELL', type: 'LIMIT', amount: 10, price: 20,
+                timeInForce: 'PO', stp: 'CANCEL_MAKER',
+            });
+            expect(result.success).toBe(true);
+            const struct = mockContract.addNewOrder.mock.calls[0][0];
+            expect(struct.type1).toBe(1); // LIMIT
+            expect(struct.type2).toBe(3); // PO
+            expect(struct.stp).toBe(1); // CANCEL_MAKER
+        });
+
+        it('addOrder default modifiers stay GTC / CANCEL_TAKER', async () => {
+            const result = await client.addOrder({
+                pair: 'AVAX/USDC', side: 'BUY', amount: 10, price: 20,
+            });
+            expect(result.success).toBe(true);
+            const struct = mockContract.addNewOrder.mock.calls[0][0];
+            expect(struct.type2).toBe(0);
+            expect(struct.stp).toBe(0);
+        });
+
+        it('addOrder accepts a MARKET order with default (GTC) modifiers', async () => {
+            const result = await client.addOrder({
+                pair: 'AVAX/USDC', side: 'BUY', type: 'MARKET', amount: 10,
+            });
+            expect(result.success).toBe(true);
+            const struct = mockContract.addNewOrder.mock.calls[0][0];
+            expect(struct.type1).toBe(0); // MARKET
+            expect(struct.price).toBe(0n);
+        });
+
+        it('addOrder rejects an invalid timeInForce before sending', async () => {
+            const result = await client.addOrder({
+                pair: 'AVAX/USDC', side: 'BUY', amount: 10, price: 20, timeInForce: 'FAST',
+            });
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('timeInForce');
+            expect(mockContract.addNewOrder).not.toHaveBeenCalled();
+        });
+
+        it('addOrder rejects an invalid stp before sending', async () => {
+            const result = await client.addOrder({
+                pair: 'AVAX/USDC', side: 'BUY', amount: 10, price: 20, stp: 'BOGUS',
+            });
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('stp');
+            expect(mockContract.addNewOrder).not.toHaveBeenCalled();
+        });
+
+        it('addOrderList alias forwards to addLimitOrderList with per-order modifiers', async () => {
+            const result = await client.addOrderList([
+                { pair: 'AVAX/USDC', side: 'BUY', amount: 10, price: 20, timeInForce: 'IOC' },
+                { pair: 'AVAX/USDC', side: 'SELL', amount: 10, type: 'MARKET', stp: 'CANCEL_BOTH' },
+            ]);
+            expect(result.success).toBe(true);
+            const tuples = mockContract.addOrderList.mock.calls[0][0];
+            expect(tuples[0][7]).toBe(2); // IOC
+            expect(tuples[1][6]).toBe(0); // MARKET
+            expect(tuples[1][8]).toBe(2); // CANCEL_BOTH
+        });
+
+        it('addLimitOrderList rejects an invalid order_type in any entry', async () => {
+            const result = await client.addLimitOrderList([
+                { pair: 'AVAX/USDC', side: 'BUY', amount: 10, price: 20 },
+                { pair: 'AVAX/USDC', side: 'BUY', amount: 10, price: 20, type: 'STOP' as any },
+            ]);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('MARKET'); // rejected by validateOrderParams
+            expect(mockContract.addOrderList).not.toHaveBeenCalled();
+        });
+
+        it('addLimitOrderList rejects an invalid timeInForce in any entry', async () => {
+            const result = await client.addLimitOrderList([
+                { pair: 'AVAX/USDC', side: 'BUY', amount: 10, price: 20, timeInForce: 'FAST' },
+            ]);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('timeInForce');
+        });
+
+        it('cancelAddList rejects an invalid order_type in a replacement', async () => {
+            const reps = [{ order_id: VALID_ORDER_ID, pair: 'AVAX/USDC', side: 'SELL', price: 10, amount: 10, order_type: 'STOP' }];
+            const result = await client.cancelAddList(reps);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('order type');
+        });
+
+        it('cancelAddList rejects an invalid timeInForce in a replacement', async () => {
+            const reps = [{ order_id: VALID_ORDER_ID, pair: 'AVAX/USDC', side: 'SELL', price: 10, amount: 10, timeInForce: 'FAST' }];
+            const result = await client.cancelAddList(reps);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('timeInForce');
+        });
+
+        it('cancelAddList rejects a LIMIT replacement with no price', async () => {
+            // default order_type is LIMIT, which requires a price (validateOrderCombo)
+            const reps = [{ order_id: VALID_ORDER_ID, pair: 'AVAX/USDC', side: 'SELL', amount: 10 }];
+            const result = await client.cancelAddList(reps);
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('LIMIT orders require a price');
+        });
     });
 
 
@@ -2807,7 +2912,7 @@ describe('order helper branch coverage', () => {
 
     it('_enumToName and _toHexIdentifier cover bigint/Uint8Array/fallback branches', () => {
         expect((client as any)._enumToName(1n, { 1: 'LIMIT' })).toBe('LIMIT');
-        expect((client as any)._enumToName(7, { 1: 'LIMIT' })).toBe(7);
+        expect((client as any)._enumToName(7, { 1: 'LIMIT' })).toBe('UNKNOWN(7)');
         expect((client as any)._enumToName('BUY', { 0: 'BUY' })).toBe('BUY');
 
         expect((client as any)._toHexIdentifier(new Uint8Array([0xab, 0xcd]))).toBe('0xabcd');
@@ -2926,8 +3031,8 @@ describe('order helper branch coverage', () => {
         expect(result.success).toBe(false);
         expect(result.error).toContain("Order field 'createBlock' must be an integer block number.");
     });
-    it('_enumToName falls back to numeric values for unmapped bigint enums', () => {
-        expect((client as any)._enumToName(99n, { 0: 'ZERO' })).toBe(99);
+    it('_enumToName maps unmapped bigint enums to an UNKNOWN sentinel', () => {
+        expect((client as any)._enumToName(99n, { 0: 'ZERO' })).toBe('UNKNOWN(99)');
     });
 
     it('_resolveOrderReference stringifies non-Error conversion failures', async () => {
@@ -3064,10 +3169,10 @@ describe('order helper branch coverage', () => {
             timestamp: '2024-01-03T00:00:00.000Z',
         });
         expect(order.clientOrderId).toBe(VALID_CLIENT_ID);
-        expect(order.side).toBe('9');
-        expect(order.type1).toBe('8');
-        expect(order.type2).toBe('7');
-        expect(order.status).toBe('7');
+        expect(order.side).toBe('UNKNOWN(9)');
+        expect(order.type1).toBe('UNKNOWN(8)');
+        expect(order.type2).toBe('UNKNOWN(7)');
+        expect(order.status).toBe('CANCEL_REJECT');
         expect(order.createTs).toBe('2024-01-03T00:00:00.000Z');
         expect(order.updateTs).toBeNull();
     });
@@ -3202,10 +3307,10 @@ describe('order helper branch coverage', () => {
         const result = await client.getOrderByClientId(VALID_CLIENT_ID);
         expect(result.success).toBe(true);
         expect(result.data!.traderAddress).toBe('0');
-        expect(result.data!.side).toBe('99');
-        expect(result.data!.type1).toBe('98');
-        expect(result.data!.type2).toBe('97');
-        expect(result.data!.status).toBe('7');
+        expect(result.data!.side).toBe('UNKNOWN(99)');
+        expect(result.data!.type1).toBe('UNKNOWN(98)');
+        expect(result.data!.type2).toBe('UNKNOWN(97)');
+        expect(result.data!.status).toBe('CANCEL_REJECT');
     });
 
     it('formats Error throws in _formatOrderData via .message', async () => {
@@ -3266,10 +3371,10 @@ describe('order helper branch coverage', () => {
         );
         expect(result.success).toBe(true);
         expect(result.data!.traderAddress).toBe('0');
-        expect(result.data!.side).toBe('99');
-        expect(result.data!.type1).toBe('98');
-        expect(result.data!.type2).toBe('97');
-        expect(result.data!.status).toBe('96');
+        expect(result.data!.side).toBe('UNKNOWN(99)');
+        expect(result.data!.type1).toBe('UNKNOWN(98)');
+        expect(result.data!.type2).toBe('UNKNOWN(97)');
+        expect(result.data!.status).toBe('UNKNOWN(96)');
     });
 });
 
