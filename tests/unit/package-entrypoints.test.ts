@@ -89,8 +89,9 @@ describe('package entrypoints', () => {
         expect(OrderSide.SELL).toBe(1);
         expect(OrderType.MARKET).toBe(0);
         expect(OrderType.LIMIT).toBe(1);
-        expect(OrderStatus.NEW).toBe(3);
+        expect(OrderStatus.NEW).toBe(0);
         expect(OrderStatus.KILLED).toBe(6);
+        expect(OrderStatus.CANCEL_REJECT).toBe(7);
     });
 
     it('DexalotClient static helpers run', () => {
