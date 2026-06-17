@@ -242,6 +242,19 @@ export class BaseClient {
      */
     public _sanitizeError(error: Error | unknown, context: string): string {
         const err = error instanceof Error ? error : new Error(String(error));
+        // First lift any contract revert reason code (e.g. T-FOKF-01) to a
+        // friendly "<code>: <description>" string via the shared error catalog,
+        // then sanitize (the code itself is preserved by the sanitizer).
+        // Error sanitization must never itself throw, so revert-code lifting is
+        // best-effort: any failure falls through to plain sanitization.
+        try {
+            const parsed = parseRevertReason(err.message);
+            if (parsed !== err.message) {
+                return sanitizeErrorMessage(parsed, context);
+            }
+        } catch {
+            // fall through to plain sanitization
+        }
         return sanitizeErrorMessage(err, context);
     }
 

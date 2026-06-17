@@ -1577,6 +1577,16 @@ export class CLOBClient extends BaseClient {
             return this.addLimitOrderList(orders, waitForReceipt);
         }
 
+        /**
+         * Cancel an existing order and replace it atomically with a new price
+         * and quantity, via the contract's `cancelReplaceOrder`.
+         *
+         * Note: `cancelReplaceOrder` carries only a new price and quantity, so
+         * the replacement **inherits** the original order's `type1`,
+         * `timeInForce` (`type2`) and `stp`. This method therefore exposes no
+         * time-in-force / stp parameters; to change those, cancel the order and
+         * place a new one (e.g. via {@link cancelAddList}).
+         */
         public async replaceOrder(
             orderId: string,
             newPrice: number,
