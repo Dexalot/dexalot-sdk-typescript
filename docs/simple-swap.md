@@ -38,8 +38,11 @@ if (!firm.success) {
     return;
 }
 
-// 3. Execute — SDK computes msg.value automatically for native sells,
-//    applies gas-buffer, and surfaces revert reason on failure.
+// 3. Execute — SDK sends simpleSwap to the quote's tx.to (DexalotRouter) or
+//    order.maker (never the legacy MainnetRFQ address), computes msg.value
+//    for native sells, applies gas-buffer, and surfaces revert reason on
+//    failure. ERC20 sells need `approveRfqMaker(firm.data!)` first because
+//    each maker contract pulls the taker asset itself.
 const result = await client.executeRFQSwap(firm.data!);
 if (result.success) {
     console.log('Swap tx:', result.data!.txHash);

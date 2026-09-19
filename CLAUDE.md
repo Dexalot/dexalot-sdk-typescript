@@ -257,6 +257,9 @@ the other side.
 
 ## Non-Obvious Decisions
 
+- **RFQ swaps execute on `tx.to` / `order.maker`, never on the deployments `MainnetRFQ` address**: mainnet firm quotes are signed by one of several maker contracts (legacy MainnetRFQ 1.2.8 plus DexalotRFQ 2.x instances, each with its own `swapSigner` and EIP-712 domain) behind `DexalotRouter` (`MainnetRFQ.trustedForwarder()`), whose fallback forwards `simpleSwap` calldata to `order.maker` with the sender appended. The deployments endpoint lists the legacy address and the router but not the makers, so sending a quote to the legacy address fails `RF-IS-01` whenever another maker won it. `executeRFQSwap` resolves the target via `_resolveRfqExecutionTarget`: `order.maker` must be in `router.getAllowedRFQs()` (discovered by `_getRfqTargets`: router from `deployments['DexalotRouter']`, loaded by `_fetchDeployments`, else `trustedForwarder()` on-chain; static-tier cache, lookup failures degrade to deployment-only and are not cached), `tx.to` must be the router or the maker, and `tx.data`/`tx.value` (when present) must equal the SDK's own encoding from the embedded `SIMPLE_SWAP_ABI`. Mirrors the Python SDK 0.6.1 fix.
+- **ERC20 RFQ sells need an allowance on `order.maker`**: the maker contract does `transferFrom(taker)` itself, so approving the router or the legacy address does nothing. `executeRFQSwap` pre-checks `allowance(taker, maker)` and fails with an actionable message; `approveRfqMaker(quote, amountWei?)` grants exactly `takerAmount` (or `amountWei`) after validating the maker against the allow-list. Native sells carry the amount as `msg.value` and skip both.
+
 - **Package name is scoped**: `@dexalot/dexalot-sdk` on NPM, not
   bare `dexalot-sdk`. The bare name was never registered; any older
   docs showing the bare name are typos.

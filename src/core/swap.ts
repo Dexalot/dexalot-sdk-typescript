@@ -1,4 +1,4 @@
-import { TransactionResponse } from 'ethers';
+import { Interface, TransactionResponse } from 'ethers';
 import { SwapQuote } from '../types/index.js';
 import { ENDPOINTS, DEFAULTS } from '../constants.js';
 import { CLOBClient } from './clob.js';
@@ -19,6 +19,56 @@ const NATIVE_ZERO_ADDRESS = '0x' + '0'.repeat(40);
  * pattern used in TRANSFER paths.
  */
 const SWAP_GAS_BUFFER = DEFAULTS.GAS_BUFFER;
+
+/**
+ * The RFQ API serves firm quotes from several maker contracts (the legacy
+ * MainnetRFQ plus DexalotRFQ instances), all reachable through DexalotRouter,
+ * which `MainnetRFQ.trustedForwarder()` points at. Each maker has its own
+ * EIP-712 domain and swap signer, so a quote is only valid on `order.maker`
+ * (called directly, or via the router which forwards the call to it). The
+ * deployments endpoint publishes the legacy MainnetRFQ and the DexalotRouter
+ * but not the individual makers, so the allow-list is read on-chain with
+ * these ABI fragments (and the router too, when the backend does not
+ * publish it).
+ */
+const RFQ_TRUSTED_FORWARDER_ABI = ['function trustedForwarder() view returns (address)'];
+const ROUTER_ALLOWED_RFQS_ABI = ['function getAllowedRFQs() view returns (address[])'];
+/**
+ * simpleSwap((uint256,uint128,address,address,address,address,uint256,uint256),bytes)
+ * is shared by MainnetRFQ, DexalotRFQ and the router's forwarding fallback.
+ */
+const SIMPLE_SWAP_ABI = [
+    'function simpleSwap((uint256 nonceAndMeta, uint128 expiry, address makerAsset, address takerAsset, address maker, address taker, uint256 makerAmount, uint256 takerAmount) _order, bytes _signature) payable',
+];
+const ERC20_ALLOWANCE_ABI = [
+    'function allowance(address owner, address spender) view returns (uint256)',
+    'function approve(address spender, uint256 value) returns (bool)',
+];
+const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+
+/** Router address and lowercase maker addresses it forwards to. */
+export interface RfqTargets {
+    router: string | null;
+    allowed: Set<string>;
+}
+
+export interface RfqSwapResult {
+    txHash: string;
+    operation: string;
+    /** Contract `simpleSwap` was sent to: the router (`tx.to`) or `order.maker`. */
+    target: string;
+    maker: string;
+}
+
+export interface RfqApprovalResult {
+    approved: boolean;
+    txHash?: string;
+    amount?: bigint;
+    allowance?: bigint;
+    spender: string;
+    token: string;
+    operation: string;
+}
 
 export class SwapClient extends CLOBClient {
 
@@ -372,7 +422,7 @@ export class SwapClient extends CLOBClient {
         public async executeRFQSwap(
             quote: any,
             waitForReceipt: boolean = true
-        ): Promise<Result<{ txHash: string; operation: string }>> {
+        ): Promise<Result<RfqSwapResult>> {
             if (!this.signer) {
                 return Result.fail('Signer required');
             }
@@ -393,6 +443,8 @@ export class SwapClient extends CLOBClient {
                 return Result.fail(`Unknown chain ID: ${chainId}`);
             }
 
+            // The deployments (legacy) contract only anchors router/maker
+            // discovery; it is never the execution target.
             const rfqDep = this._mainnetRfqDeployment(chainName);
             if (!rfqDep) {
                 const available = Object.keys(this.deployments['MainnetRFQ'] || {}).join(', ');
@@ -400,6 +452,19 @@ export class SwapClient extends CLOBClient {
                     `RFQ contract not found for '${chainName}'. Available: ${available || 'none'}`
                 );
             }
+
+            const targetRes = await this._resolveRfqExecutionTarget(
+                chainName,
+                rfqDep.address,
+                transformedQuote,
+                orderData
+            );
+            if (!targetRes.success || !targetRes.data) {
+                return Result.fail(targetRes.error || 'Could not resolve RFQ execution target.');
+            }
+            const target = targetRes.data;
+            const maker = String(orderData.maker);
+            const context = this._rfqErrorContext(transformedQuote, orderData, target);
 
             try {
                 const orderTuple = [
@@ -419,12 +484,31 @@ export class SwapClient extends CLOBClient {
                 // shape the contract will validate.
                 const msgValue = this._computeMsgValue(orderData);
 
+                const envelopeError = this._checkTxEnvelope(transformedQuote, orderTuple, sig, msgValue);
+                if (envelopeError) {
+                    return Result.fail(`${envelopeError} [${context}]`);
+                }
+
+                // ERC20 sells: the maker contract pulls funds with transferFrom,
+                // so the allowance must be granted to order.maker (not the
+                // router and not the legacy MainnetRFQ). Fail here with a clear
+                // message instead of letting the contract revert.
+                const takerAsset = String(orderData.takerAsset ?? '');
+                if (takerAsset.toLowerCase() !== NATIVE_ZERO_ADDRESS) {
+                    const needed = this._orderFieldToBigInt(orderData.takerAmount);
+                    const owner = await this.signer.getAddress();
+                    const allowance = await this._getErc20Allowance(chainName, takerAsset, owner, maker);
+                    if (allowance < needed) {
+                        return Result.fail(
+                            `Insufficient allowance: RFQ maker ${maker} may spend ${allowance} of ` +
+                                `${takerAsset}, swap needs ${needed}. Call approveRfqMaker(quote) first ` +
+                                `(approvals are per maker contract) [${context}]`
+                        );
+                    }
+                }
+
                 return await this.withRpcFailover(chainName, async (provider) => {
-                    const contract = this._contractForSigner(
-                        provider,
-                        rfqDep.address,
-                        rfqDep.abi
-                    );
+                    const contract = this._contractForSigner(provider, target, SIMPLE_SWAP_ABI);
 
                     const gasEst = await contract.simpleSwap.estimateGas(
                         orderTuple,
@@ -441,24 +525,328 @@ export class SwapClient extends CLOBClient {
 
                     if (waitForReceipt) {
                         const receipt = await tx.wait();
-                        if (!receipt || receipt.status !== 1) {
-                            const detailParts: string[] = [`tx=${tx.hash}`];
-                            if (receipt?.blockNumber != null) {
-                                detailParts.push(`block=${receipt.blockNumber}`);
-                            }
-                            const reason = await this._extractRevertReason(provider, tx, receipt);
-                            if (reason) {
-                                detailParts.push(`reason=${reason}`);
-                            }
-                            return Result.fail(`Transaction reverted: ${detailParts.join(', ')}`);
+                        const failure = await this._describeReceiptFailure(provider, tx, receipt);
+                        if (failure) {
+                            return Result.fail(`${failure} [${context}]`);
                         }
-                        return Result.ok({ txHash: receipt.hash, operation: 'execute_rfq_swap' });
+                        return Result.ok({
+                            txHash: receipt!.hash,
+                            operation: 'execute_rfq_swap',
+                            target,
+                            maker,
+                        });
                     }
 
-                    return Result.ok({ txHash: tx.hash, operation: 'execute_rfq_swap' });
+                    return Result.ok({ txHash: tx.hash, operation: 'execute_rfq_swap', target, maker });
                 });
             } catch (e) {
-                return Result.fail(this._sanitizeError(e, 'executing swap'));
+                return Result.fail(`${this._sanitizeError(e, 'executing swap')} [${context}]`);
             }
+        }
+
+        /**
+         * Grant the quote's maker contract an ERC20 allowance for the taker asset.
+         *
+         * Firm quotes are served by several maker contracts and each one pulls
+         * the taker asset with `transferFrom` itself, so the allowance has to
+         * be granted to `order.maker` — approving the router or the legacy
+         * MainnetRFQ address does nothing for a quote from another maker.
+         * Call this before `executeRFQSwap` when selling an ERC20 token.
+         *
+         * The maker is validated against the router's on-chain allow-list
+         * before any approval is sent. Native-asset sells need no allowance
+         * and are rejected.
+         *
+         * @param quote Firm quote (or its `{success, quote}` envelope).
+         * @param amountWei Allowance to grant in base units; defaults to the
+         *   quote's `takerAmount`.
+         * @param waitForReceipt Block until the approval is mined.
+         * @returns `approved=false` with the current `allowance` when nothing
+         *   had to be sent, or `approved=true` with the approval `txHash`.
+         */
+        public async approveRfqMaker(
+            quote: any,
+            amountWei?: bigint,
+            waitForReceipt: boolean = true
+        ): Promise<Result<RfqApprovalResult>> {
+            if (!this.signer) {
+                return Result.fail('Signer required');
+            }
+
+            const transformedQuote = this._transformQuoteFromAPI(quote);
+            const orderData = transformedQuote.order;
+            if (!orderData) {
+                return Result.fail("Invalid firm quote: missing 'order' field.");
+            }
+
+            const chainId = transformedQuote.chainId || this.chainId;
+            const chainName = this._getChainNameFromId(chainId);
+            if (!chainName) {
+                return Result.fail(`Unknown chain ID: ${chainId}`);
+            }
+            const rfqDep = this._mainnetRfqDeployment(chainName);
+            if (!rfqDep) {
+                const available = Object.keys(this.deployments['MainnetRFQ'] || {}).join(', ');
+                return Result.fail(
+                    `RFQ contract not found for '${chainName}'. Available: ${available || 'none'}`
+                );
+            }
+
+            const takerAsset = String(orderData.takerAsset ?? '');
+            if (!takerAsset) {
+                return Result.fail("Invalid firm quote: missing 'order.takerAsset' field.");
+            }
+            if (takerAsset.toLowerCase() === NATIVE_ZERO_ADDRESS) {
+                return Result.fail(
+                    'Native taker asset does not need an allowance; executeRFQSwap sends it as msg.value.'
+                );
+            }
+
+            const targetRes = await this._resolveRfqExecutionTarget(
+                chainName,
+                rfqDep.address,
+                transformedQuote,
+                orderData
+            );
+            if (!targetRes.success || !targetRes.data) {
+                return Result.fail(targetRes.error || 'Could not resolve RFQ execution target.');
+            }
+            const maker = String(orderData.maker);
+            const needed = amountWei ?? this._orderFieldToBigInt(orderData.takerAmount);
+            if (needed <= 0n) {
+                return Result.fail('Approval amount must be positive.');
+            }
+            const context = this._rfqErrorContext(transformedQuote, orderData, maker);
+
+            try {
+                const owner = await this.signer.getAddress();
+                const allowance = await this._getErc20Allowance(chainName, takerAsset, owner, maker);
+                if (allowance >= needed) {
+                    return Result.ok({
+                        approved: false,
+                        allowance,
+                        spender: maker,
+                        token: takerAsset,
+                        operation: 'approve_rfq_maker',
+                    });
+                }
+
+                return await this.withRpcFailover(chainName, async (provider) => {
+                    const token = this._contractForSigner(provider, takerAsset, ERC20_ALLOWANCE_ABI);
+                    const gasEst = await token.approve.estimateGas(maker, needed);
+                    const gasLimit = BigInt(Math.floor(Number(gasEst) * SWAP_GAS_BUFFER));
+                    const tx: TransactionResponse = await token.approve(maker, needed, { gasLimit });
+
+                    if (waitForReceipt) {
+                        const receipt = await tx.wait();
+                        const failure = await this._describeReceiptFailure(provider, tx, receipt);
+                        if (failure) {
+                            return Result.fail(`${failure} [${context}]`);
+                        }
+                    }
+                    return Result.ok({
+                        approved: true,
+                        txHash: tx.hash,
+                        amount: needed,
+                        spender: maker,
+                        token: takerAsset,
+                        operation: 'approve_rfq_maker',
+                    });
+                });
+            } catch (e) {
+                return Result.fail(`${this._sanitizeError(e, 'approving RFQ maker')} [${context}]`);
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // RFQ execution-target discovery and validation
+        // ------------------------------------------------------------------
+
+        /**
+         * Discover the RFQ router and the maker contracts it forwards to.
+         *
+         * The router address comes from the deployments endpoint
+         * (`DexalotRouter` for the chain) when the backend publishes it, and
+         * otherwise from `trustedForwarder()` on the deployments (legacy
+         * MainnetRFQ) contract. The allowed makers always come from
+         * `getAllowedRFQs()` on that router — the API does not list them and
+         * the router's own allow-list is what it enforces. The deployments
+         * address is always part of the allowed set.
+         *
+         * Cached in the static tier (1h) per API base URL and deployment
+         * address. Lookup failures are not cached and degrade to
+         * `{ router: null, allowed: {deployment} }` — the legacy behaviour —
+         * so a quote from another maker is refused rather than sent to the
+         * wrong contract.
+         */
+        protected async _getRfqTargets(chainName: string, deploymentAddress: string): Promise<RfqTargets> {
+            const deployment = deploymentAddress.toLowerCase();
+            const cacheKey = `rfq_targets:${this.apiBaseUrl}:${deployment}`;
+            if (this._cacheEnabled) {
+                const cached = this._staticCache.get<RfqTargets>(cacheKey);
+                if (cached) return cached;
+            }
+
+            const allowed = new Set<string>([deployment]);
+            let router: string | null = null;
+            try {
+                let routerAddr: string | null = this._dexalotRouterDeployment(chainName)?.address ?? null;
+                if (!routerAddr) {
+                    const forwarder = await this.withRpcFailover(chainName, async (provider) =>
+                        this._contractReadOnly(provider, deploymentAddress, RFQ_TRUSTED_FORWARDER_ABI).trustedForwarder()
+                    );
+                    if (forwarder && String(forwarder).toLowerCase() !== NATIVE_ZERO_ADDRESS) {
+                        routerAddr = String(forwarder);
+                    }
+                }
+                if (routerAddr) {
+                    const routerAddress = routerAddr;
+                    const makers = await this.withRpcFailover(chainName, async (provider) =>
+                        this._contractReadOnly(provider, routerAddress, ROUTER_ALLOWED_RFQS_ABI).getAllowedRFQs()
+                    );
+                    for (const m of Array.from(makers as Iterable<unknown>)) {
+                        allowed.add(String(m).toLowerCase());
+                    }
+                    router = routerAddress;
+                }
+            } catch (e) {
+                this._logger.warn(
+                    `Could not resolve RFQ router/allowed makers via ${deploymentAddress}; ` +
+                        'only the deployments address will be accepted as maker',
+                    { error: this._sanitizeError(e, 'resolving RFQ targets') }
+                );
+                return { router: null, allowed: new Set<string>([deployment]) };
+            }
+
+            const result: RfqTargets = { router, allowed };
+            if (this._cacheEnabled) {
+                this._staticCache.set(cacheKey, result);
+            }
+            return result;
+        }
+
+        /**
+         * Pick and validate the contract `simpleSwap` must be sent to.
+         *
+         * `order.maker` must be on the router's allow-list (or be the
+         * deployments address). If the quote carries `tx.to` it must be the
+         * router or the maker; it is then used as the target so the call
+         * follows the API's own routing. Otherwise the maker is called directly.
+         */
+        protected async _resolveRfqExecutionTarget(
+            chainName: string,
+            deploymentAddress: string,
+            quote: any,
+            orderData: any
+        ): Promise<Result<string>> {
+            const makerRaw = orderData.maker;
+            if (!makerRaw) {
+                return Result.fail("Invalid firm quote: missing 'order.maker' field.");
+            }
+            const maker = String(makerRaw);
+            if (!ADDRESS_RE.test(maker)) {
+                return Result.fail(`Invalid firm quote: 'order.maker' is not an address: ${maker}`);
+            }
+
+            const { router, allowed } = await this._getRfqTargets(chainName, deploymentAddress);
+            if (!allowed.has(maker.toLowerCase())) {
+                return Result.fail(
+                    `Firm quote maker ${maker} is not an allowed RFQ contract ` +
+                        `(router=${router ?? 'unknown'}); refusing to execute`
+                );
+            }
+
+            const txMeta = quote?.tx && typeof quote.tx === 'object' ? quote.tx : null;
+            const txTo = txMeta?.to;
+            if (!txTo) {
+                return Result.ok(maker);
+            }
+            const txToStr = String(txTo);
+            if (!ADDRESS_RE.test(txToStr)) {
+                return Result.fail(`Invalid firm quote: 'tx.to' is not an address: ${txToStr}`);
+            }
+            const permitted = new Set<string>([maker.toLowerCase()]);
+            if (router) permitted.add(router.toLowerCase());
+            if (!permitted.has(txToStr.toLowerCase())) {
+                return Result.fail(
+                    `Firm quote tx.to ${txToStr} is neither the RFQ router nor the order maker ` +
+                        `${maker}; refusing to execute`
+                );
+            }
+            return Result.ok(txToStr);
+        }
+
+        /**
+         * Cross-check the API's `tx` envelope against the call the SDK encodes.
+         * The SDK always builds the calldata itself; the envelope is only used
+         * to detect disagreement. Returns an error message when `tx.data` or
+         * `tx.value` are present and differ, `null` otherwise.
+         */
+        protected _checkTxEnvelope(quote: any, orderTuple: unknown[], sig: string, msgValue: bigint): string | null {
+            const txMeta = quote?.tx && typeof quote.tx === 'object' ? quote.tx : {};
+            if (txMeta.data) {
+                const expected = this._encodeSimpleSwap(orderTuple, sig);
+                if (String(txMeta.data).toLowerCase() !== expected.toLowerCase()) {
+                    return 'Firm quote tx.data does not match the SDK-encoded simpleSwap call; refusing to execute';
+                }
+            }
+            if (txMeta.value !== undefined && txMeta.value !== null && txMeta.value !== '') {
+                if (this._orderFieldToBigInt(txMeta.value) !== msgValue) {
+                    return (
+                        `Firm quote tx.value ${txMeta.value} does not match the computed msg.value ` +
+                        `${msgValue}; refusing to execute`
+                    );
+                }
+            }
+            return null;
+        }
+
+        /** ABI-encode `simpleSwap(order, signature)` calldata. */
+        protected _encodeSimpleSwap(orderTuple: unknown[], sig: string): string {
+            return String(new Interface(SIMPLE_SWAP_ABI).encodeFunctionData('simpleSwap', [orderTuple, sig]));
+        }
+
+        /** `allowance(owner, spender)` of an ERC20 token in base units. */
+        protected async _getErc20Allowance(
+            chainName: string,
+            token: string,
+            owner: string,
+            spender: string
+        ): Promise<bigint> {
+            const raw = await this.withRpcFailover(chainName, async (provider) =>
+                this._contractReadOnly(provider, token, ERC20_ALLOWANCE_ABI).allowance(owner, spender)
+            );
+            return BigInt(raw);
+        }
+
+        /** Compact `key=value` trail appended to swap errors for diagnosis. */
+        protected _rfqErrorContext(quote: any, orderData: any, target: string): string {
+            const parts = [`target=${target}`, `maker=${orderData?.maker}`];
+            if (quote?.quoteId) parts.push(`quoteId=${quote.quoteId}`);
+            const nonceAndMeta = orderData?.nonceAndMeta;
+            if (nonceAndMeta !== undefined && nonceAndMeta !== null && nonceAndMeta !== '') {
+                parts.push(`nonceAndMeta=${nonceAndMeta}`);
+            }
+            const expiry = orderData?.expiry;
+            if (expiry !== undefined && expiry !== null && expiry !== '') {
+                parts.push(`expiry=${expiry}`);
+            }
+            return parts.join(', ');
+        }
+
+        /** `Transaction reverted: ...` message for a failed receipt, or `null` on success. */
+        protected async _describeReceiptFailure(provider: any, tx: any, receipt: any): Promise<string | null> {
+            if (receipt && receipt.status === 1) {
+                return null;
+            }
+            const detailParts: string[] = [`tx=${tx.hash}`];
+            if (receipt?.blockNumber != null) {
+                detailParts.push(`block=${receipt.blockNumber}`);
+            }
+            const reason = await this._extractRevertReason(provider, tx, receipt);
+            if (reason) {
+                detailParts.push(`reason=${reason}`);
+            }
+            return `Transaction reverted: ${detailParts.join(', ')}`;
         }
 }

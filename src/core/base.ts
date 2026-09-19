@@ -669,6 +669,10 @@ export class BaseClient {
         await this._fetchContractDeployment('TradePairs');
         await this._fetchContractDeployment('Portfolio');
         await this._fetchContractDeployment('MainnetRFQ');
+        // The RFQ router is newer than the other contract types; a backend
+        // that does not publish it only logs (errors are caught below) and
+        // the swap path falls back to MainnetRFQ.trustedForwarder() on-chain.
+        await this._fetchContractDeployment('DexalotRouter');
     }
 
     public async _fetchContractDeployment(contractType: string): Promise<void> {
@@ -734,6 +738,11 @@ export class BaseClient {
                         if (provider) {
                             this.mainnetRfqContracts[chainName] = new Contract(address, abi, provider);
                         }
+                    }
+                } else if (contractType === 'DexalotRouter') {
+                    const chainName = this._getChainNameFromEnv(envString);
+                    if (chainName && address) {
+                        this.deployments['DexalotRouter'][chainName] = { address, abi };
                     }
                 }
             }
@@ -1253,6 +1262,20 @@ export class BaseClient {
         chainName: string
     ): { address: string; abi: any[] } | null {
         const m = this.deployments['MainnetRFQ'] as Record<string, { address?: string; abi?: unknown }> | undefined;
+        const dep = m?.[chainName];
+        if (!dep?.address) return null;
+        const abi = Array.isArray(dep.abi) ? dep.abi : [];
+        return { address: dep.address, abi };
+    }
+
+    /**
+     * `DexalotRouter` deployment published by the deployments endpoint for a
+     * connected chain, or `null` when the backend did not list it.
+     */
+    protected _dexalotRouterDeployment(
+        chainName: string
+    ): { address: string; abi: any[] } | null {
+        const m = this.deployments['DexalotRouter'] as Record<string, { address?: string; abi?: unknown }> | undefined;
         const dep = m?.[chainName];
         if (!dep?.address) return null;
         const abi = Array.isArray(dep.abi) ? dep.abi : [];
