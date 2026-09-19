@@ -303,12 +303,31 @@ if (result.success) {
 }
 ```
 
+### Approve the maker (ERC20 sells only)
+
+Firm quotes come from several maker contracts behind the Dexalot router, and
+each maker pulls the taker asset itself. Grant the allowance to the quote's
+`order.maker` (the SDK validates the maker against the router's on-chain
+allow-list before approving). Native-asset sells skip this step.
+
+```ts
+const approval = await client.approveRfqMaker(quote);
+if (approval.success && approval.data!.approved) {
+    console.log('Approval tx:', approval.data!.txHash);
+}
+```
+
 ### Execute swap
+
+`executeRFQSwap` targets the quote's `tx.to` (the router) or `order.maker`,
+never the legacy `MainnetRFQ` deployment address, and refuses quotes whose
+maker or `tx` envelope fail validation. Errors include a
+`[target=..., maker=..., quoteId=...]` trail for diagnosis.
 
 ```ts
 const result = await client.executeRFQSwap(quote);
 if (result.success) {
-    console.log('Swap tx:', result.data!.txHash);
+    console.log('Swap tx:', result.data!.txHash, 'via', result.data!.target);
 } else {
     // result.error includes tx hash + block + revert reason when the receipt reverts
     console.error('Swap failed:', result.error);

@@ -296,6 +296,8 @@ describe('BaseClient', () => {
 
              // 3. Mock MainnetRFQ response
              mockedAxios.request.mockResolvedValueOnce({ data: [] });
+             // 4. Mock DexalotRouter response
+             mockedAxios.request.mockResolvedValueOnce({ data: [] });
 
              
              // Setup environment so it matches the deployment env
@@ -649,6 +651,8 @@ describe('BaseClient', () => {
              }] });
              // 3. MainnetRFQ (Error case)
              mockedAxios.request.mockRejectedValueOnce(new Error('RFQ Error'));
+             // 4. DexalotRouter
+             mockedAxios.request.mockResolvedValueOnce({ data: [] });
 
              const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
              
@@ -670,6 +674,8 @@ describe('BaseClient', () => {
                  address: '0xRFQ',
                  abi: []
              }] });
+             // 4. DexalotRouter
+             mockedAxios.request.mockResolvedValueOnce({ data: [] });
 
              await client._fetchDeployments();
              expect(client.deployments['MainnetRFQ']['Avalanche'].address).toBe('0xRFQ');
@@ -2206,6 +2212,43 @@ describe('BaseClient', () => {
             await expect(client._apiCall(123 as any, '/x')).rejects.toThrow(
                 /Invalid HTTP method/
             );
+        });
+    });
+
+    describe('DexalotRouter deployment', () => {
+        beforeEach(() => {
+            client = new BaseClient();
+            client.deployments = {};
+            client.chainConfig = {};
+        });
+
+        it('_fetchContractDeployment stores the router by connected-chain name', async () => {
+            mockedAxios.request.mockResolvedValueOnce({
+                data: [
+                    { env: ENV.PROD_MULTI_AVAX, address: '0xRouter', abi: [] },
+                    { env: 'unrelated-env', address: '0xIgnored', abi: [] },
+                ],
+            });
+            await client._fetchContractDeployment('DexalotRouter');
+            expect(client.deployments['DexalotRouter']['Avalanche'].address).toBe('0xRouter');
+            expect(client.deployments['DexalotRouter']['Fuji']).toBeUndefined();
+            expect(client.deployments['DexalotRouter']['unrelated-env'].address).toBe('0xIgnored');
+        });
+
+        it('_fetchDeployments requests the router after the other contract types', async () => {
+            const spy = jest.spyOn(client, '_fetchContractDeployment').mockResolvedValue();
+            await client._fetchDeployments();
+            expect(spy.mock.calls.map((c) => c[0])).toEqual(['TradePairs', 'Portfolio', 'MainnetRFQ', 'DexalotRouter']);
+        });
+
+        it('_dexalotRouterDeployment returns the address with a normalized abi', () => {
+            expect((client as any)._dexalotRouterDeployment('Avalanche')).toBeNull();
+            client.deployments = { DexalotRouter: { Avalanche: { abi: [] } } };
+            expect((client as any)._dexalotRouterDeployment('Avalanche')).toBeNull();
+            client.deployments = { DexalotRouter: { Avalanche: { address: '0xRouter', abi: 'bad' } } };
+            expect((client as any)._dexalotRouterDeployment('Avalanche')).toEqual({ address: '0xRouter', abi: [] });
+            client.deployments = { DexalotRouter: { Avalanche: { address: '0xRouter', abi: [{ name: 'f' }] } } };
+            expect((client as any)._dexalotRouterDeployment('Avalanche')).toEqual({ address: '0xRouter', abi: [{ name: 'f' }] });
         });
     });
 });
