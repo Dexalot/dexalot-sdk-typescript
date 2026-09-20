@@ -24,7 +24,9 @@ describe('TransferClient', () => {
 
     beforeEach(() => {
         jest.clearAllMocks();
-        
+        // Tolerated balance-lookup failures log a warning; keep test output quiet.
+        jest.spyOn(console, 'warn').mockImplementation(() => {});
+
         // Setup Signer
         mockSigner = {
             getAddress: jest.fn().mockResolvedValue(mockAddress),
@@ -100,7 +102,9 @@ describe('TransferClient', () => {
         client.portfolioSubContract = mockContract;
         client.deployments['PortfolioSub'] = { address: '0xPortfolioSub', abi: [] };
         client.deployments['PortfolioMain'] = { Avalanche: { address: '0xPortfolioMain', abi: [] } };
-        mockProvider = {};
+        // The L1 (subnet) provider must expose getBalance: the L1 balance
+        // helpers read through it when it is present.
+        mockProvider = { getBalance: jest.fn().mockResolvedValue(1000n) };
         client.subnetProvider = mockProvider as any;
         client.subnetChainId = 12345;
         client.chainId = 43114;
@@ -1104,6 +1108,25 @@ describe('TransferClient', () => {
             expect(result.data!.chain).toBe('Dexalot L1');
             expect(result.data!.symbol).toBe('ALOT');
             expect(result.data!.type).toBe('Native');
+            expect(result.data!.balance).toBe('10'); // numeric string from mocked unitConversion
+            expect(result.data!.error).toBeUndefined();
+        });
+
+        it('should fail when the L1 RPC read throws instead of returning an error string', async () => {
+            mockProvider.getBalance.mockRejectedValue(new Error('500 Internal Server Error'));
+            const result = await client.getChainWalletBalance('Dexalot L1', 'ALOT');
+            expect(result.success).toBe(false);
+            expect(result.data).toBeNull();
+            expect(result.error).toContain('fetching L1 native balance');
+        });
+
+        it('should fail when Dexalot L1 is not connected', async () => {
+            client.subnetProvider = null as any;
+            client.provider = undefined as any;
+            (client.signer as any).provider = undefined;
+            const result = await client.getChainWalletBalance('Dexalot L1', 'ALOT');
+            expect(result.success).toBe(false);
+            expect(result.error).toBe('Dexalot L1 not connected');
         });
 
         it('should return error for non-ALOT on L1', async () => {
@@ -1293,6 +1316,8 @@ describe('TransferClient', () => {
             expect(result.data!.chain_balances.length).toBeGreaterThanOrEqual(1);
             const l1 = result.data!.chain_balances.find((x: any) => x.chain === 'Dexalot L1');
             expect(l1).toBeDefined();
+            expect(l1.balance).toBe('10');
+            expect(result.data!.errors).toEqual([]);
         });
 
         it('should return error for unknown chain', async () => {
@@ -1325,17 +1350,35 @@ describe('TransferClient', () => {
             expect(native).toBeDefined();
         });
 
-        it('should handle L1 entry with error', async () => {
+        it('should fail when the only L1 lookup errors', async () => {
             const mockL1 = { getBalance: jest.fn().mockRejectedValue(new Error("L1 Error")) };
+            client.subnetProvider = null as any;
             client.provider = mockL1 as any;
             (client.signer as any).provider = mockL1;
-            
+
             const result = await client.getChainWalletBalances('Dexalot L1');
+            // Every lookup failed, so the plural call fails instead of returning
+            // a success with an error string in the balance field.
+            expect(result.success).toBe(false);
+            expect(result.error).toContain('Dexalot L1 ALOT: ');
+            expect(result.error).toContain('L1 Error');
+        });
+
+        it('should report a failed native lookup in errors while keeping ERC20 entries', async () => {
+            client.connectedChainProviders = {
+                'Avalanche': { getBalance: jest.fn().mockRejectedValue(new Error('RPC 500')) } as any
+            };
+            (Contract as unknown as jest.Mock).mockImplementation(() => ({
+                balanceOf: jest.fn().mockResolvedValue(500n)
+            }));
+
+            const result = await client.getChainWalletBalances('Avalanche');
             expect(result.success).toBe(true);
-            // Should still return but with error in balance
-            expect(result.data!.chain).toBe('Dexalot L1');
-            const l1 = result.data!.chain_balances.find((x: any) => x.chain === 'Dexalot L1');
-            expect(l1?.balance).toContain('Error');
+            expect(result.data!.chain_balances.every((x: any) => x.type === 'ERC20')).toBe(true);
+            expect(result.data!.chain_balances.every((x: any) => x.balance === '10')).toBe(true);
+            expect(result.data!.errors).toHaveLength(1);
+            expect(result.data!.errors[0]).toContain('Avalanche AVAX: ');
+            expect(result.data!.errors[0]).toContain('RPC 500');
         });
 
         it('should skip ERC20 balances if no chainId', async () => {
@@ -1379,8 +1422,10 @@ describe('TransferClient', () => {
              expect(result.success).toBe(true);
              expect(result.data!.address).toBe(mockAddress);
              const l1 = result.data!.chain_balances.find((x: any) => x.chain === 'Dexalot L1');
-             expect(l1.balance).toBeDefined();
+             expect(l1.balance).toBe('10');
              expect(result.data!.chain_balances).toHaveLength(4); // Dexalot L1 + Native AVAX + ERC20 AVAX + ERC20 USDT
+             expect(result.data!.chain_balances.every((x: any) => x.balance === '10')).toBe(true);
+             expect(result.data!.errors).toEqual([]);
         });
 
         it('should handle signer missing', async () => {
@@ -1393,19 +1438,46 @@ describe('TransferClient', () => {
          it('should handle provider errors gracefully', async () => {
              // Mock console.warn to suppress output
              jest.spyOn(console, 'warn').mockImplementation(() => {});
+             client.subnetProvider = null as any;
              (client.signer!.provider!.getBalance as jest.Mock).mockRejectedValue(new Error("RPC Error"));
              const result = await client.getAllChainWalletBalances();
-             expect(result.success).toBe(true);
-             const l1 = result.data!.chain_balances.find((x: any) => x.chain === 'Dexalot L1');
-             expect(l1.balance).toContain("Error");
+             expect(result.success).toBe(true); // Avalanche lookups still succeeded
+             expect(result.data!.chain_balances.find((x: any) => x.chain === 'Dexalot L1')).toBeUndefined();
+             expect(result.data!.chain_balances.every((x: any) => x.balance === '10')).toBe(true);
+             expect(result.data!.errors).toHaveLength(1);
+             expect(result.data!.errors[0]).toContain('Dexalot L1 ALOT: ');
+             expect(result.data!.errors[0]).toContain('RPC Error');
         });
 
         it('should handle mainnet provider errors', async () => {
              const mockProv = { getBalance: jest.fn().mockRejectedValue(new Error("Mainnet RPC Fail")) };
              client.connectedChainProviders = { 'Avalanche': mockProv as any };
              const result = await client.getAllChainWalletBalances();
-             expect(result.success).toBe(true);
-             expect(result.data!.chain_balances.find((x: any) => x.chain === 'Avalanche')!.balance).toContain("Error");
+             expect(result.success).toBe(true); // L1 and the ERC20 reads still succeeded
+             expect(
+                 result.data!.chain_balances.find((x: any) => x.chain === 'Avalanche' && x.type === 'Native')
+             ).toBeUndefined();
+             expect(result.data!.chain_balances.every((x: any) => x.balance === '10')).toBe(true);
+             expect(result.data!.errors).toHaveLength(1);
+             expect(result.data!.errors[0]).toContain('Avalanche AVAX: ');
+             expect(result.data!.errors[0]).toContain('Mainnet RPC Fail');
+        });
+
+        it('should fail when every lookup across chains fails', async () => {
+             client.subnetProvider = null as any;
+             client.provider = undefined as any;
+             (client.signer as any).provider = undefined;
+             client.connectedChainProviders = {
+                 'Avalanche': { getBalance: jest.fn().mockRejectedValue(new Error("Mainnet RPC Fail")) } as any
+             };
+             (Contract as unknown as jest.Mock).mockImplementation(() => ({
+                 balanceOf: jest.fn().mockRejectedValue(new Error('balanceOf failed'))
+             }));
+             const result = await client.getAllChainWalletBalances();
+             expect(result.success).toBe(false);
+             expect(result.error).toContain('Dexalot L1 ALOT: Dexalot L1 not connected');
+             expect(result.error).toContain('Avalanche AVAX: ');
+             expect(result.error).toContain('Avalanche USDT: ');
         });
 
         it('should fallback to string matching for ERC20s', async () => {
@@ -1445,10 +1517,14 @@ describe('TransferClient', () => {
              
              const result = await client.getAllChainWalletBalances();
              expect(result.success).toBe(true);
-             
-             const avaxEntry = result.data!.chain_balances.find((x: any) => x.chain === 'Avalanche');
-             expect(avaxEntry.balance).toContain("Error: RPC Fail");
-             
+
+             expect(
+                 result.data!.chain_balances.find((x: any) => x.chain === 'Avalanche' && x.type === 'Native')
+             ).toBeUndefined();
+             expect(result.data!.errors).toHaveLength(1);
+             expect(result.data!.errors[0]).toContain('Avalanche AVAX: ');
+             expect(result.data!.errors[0]).toContain('RPC Fail');
+
              const ethEntry = result.data!.chain_balances.find((x: any) => x.chain === 'Ethereum');
              expect(ethEntry.balance).toBe("10"); // Mock returns '10'
         });
@@ -1458,14 +1534,16 @@ describe('TransferClient', () => {
              client.subnetProvider = null as any;
              client.provider = mockL1 as any;
              (client.signer as any).provider = mockL1; // Ensure signer.provider matches
-             
+
              const result = await client.getAllChainWalletBalances();
              expect(result.success).toBe(true);
-             const l1 = result.data!.chain_balances.find((x: any) => x.chain === 'Dexalot L1');
-             expect(l1.balance).toContain("Error: L1 Fail");
+             expect(result.data!.chain_balances.find((x: any) => x.chain === 'Dexalot L1')).toBeUndefined();
+             expect(result.data!.errors).toHaveLength(1);
+             expect(result.data!.errors[0]).toContain('Dexalot L1 ALOT: ');
+             expect(result.data!.errors[0]).toContain('L1 Fail');
         });
 
-        it('should skip fetching if contract creation fails', async () => {
+        it('should report ERC20 tokens whose contract read fails in errors', async () => {
              // Force contract logic to error
              (Contract as unknown as jest.Mock).mockImplementation(() => {
                  throw new Error("Contract Error");
@@ -1473,6 +1551,10 @@ describe('TransferClient', () => {
              const info: any = { chain_balances: [] };
              await client._fetchErc20Balances(info, 1111, 'Avalanche', {} as any, '0xAddr');
              expect(info.chain_balances).toHaveLength(0);
+             // AVAX and USDT both resolve on 'Avalanche' via the env-string fallback.
+             expect(info.errors).toHaveLength(2);
+             expect(info.errors.every((e: string) => e.startsWith('Avalanche '))).toBe(true);
+             expect(info.errors.every((e: string) => e.includes('Contract Error'))).toBe(true);
         });
 
         it('should handle getAllChainWalletBalances errors in catch block', async () => {
@@ -1521,27 +1603,32 @@ describe('TransferClient', () => {
 
     describe('Missing Configs & Fallbacks', () => {
         it('should use signer provider if client provider missing in getAllChainWalletBalances', async () => {
+            client.subnetProvider = null as any;
             client.provider = undefined as any;
-            client.signer = { 
+            const signerGetBalance = jest.fn().mockResolvedValue(100n);
+            client.signer = {
                 getAddress: jest.fn().mockResolvedValue(mockAddress),
-                provider: { getBalance: jest.fn().mockResolvedValue(100n) } 
+                provider: { getBalance: signerGetBalance }
             } as any;
-            
+
             const result = await client.getAllChainWalletBalances();
             expect(result.success).toBe(true);
             const l1 = result.data!.chain_balances.find((x: any) => x.chain === 'Dexalot L1');
-            expect(l1.balance).toBeDefined();
+            expect(l1.balance).toBe('10');
+            expect(signerGetBalance).toHaveBeenCalledWith(mockAddress);
         });
 
         it('should handle missing chainConfig in getAllChainWalletBalances loop', async () => {
             client.connectedChainProviders = { 'UnknownChain': {} as any };
             client.chainConfig = {}; // No config
-            
+
             const result = await client.getAllChainWalletBalances();
-            expect(result.success).toBe(true);
-            const entry = result.data!.chain_balances.find((x: any) => x.chain === 'UnknownChain');
-            expect(entry.chain).toBe('UnknownChain');
-            expect(entry.symbol).toBe('ETH'); // Default
+            expect(result.success).toBe(true); // L1 still succeeded
+            // The provider stub has no getBalance, so the lookup fails and is
+            // reported under the default native symbol.
+            expect(result.data!.chain_balances.find((x: any) => x.chain === 'UnknownChain')).toBeUndefined();
+            expect(result.data!.errors).toHaveLength(1);
+            expect(result.data!.errors[0]).toContain('UnknownChain ETH: ');
         });
          
          it('should default to 18 decimals in deposit if token unknown', async () => {

@@ -500,6 +500,30 @@ the other side.
   `amount=1`/`amount=0`. The previous name `validatePositiveFloat`
   has been removed in a clean break — no alias kept — so future
   imports must use `validatePositiveNumber`.
+- **Wallet-balance entries never carry a string sentinel in `balance`**
+  (v0.6.2, parity with Python H-6): `balance` is a numeric string on
+  success or `null` on failure, and a failed entry carries an `error`
+  key built by `_balanceErrorEntry` (sanitized via `_sanitizeError`,
+  logged at `warn`). `getChainWalletBalance` returns `Result.fail` for
+  an L1 error entry; native/ERC20 failures already surfaced through
+  the outer catch. The plural methods (`getChainWalletBalances`,
+  `getAllChainWalletBalances`) route entries through
+  `_collectBalanceEntry`, which drops failed entries from
+  `chain_balances` and appends `"<chain> <symbol>: <msg>"` to an
+  additive `errors` array; `_balancesResult` returns `Result.fail`
+  only when every lookup failed. `_collectChainBalances` runs the
+  native read and the ERC20 reads as **two separate `withRpcFailover`
+  calls** so a native failure (after failover is exhausted) is
+  recorded and the ERC20 reads still run; `_fetchErc20Balances` emits
+  error entries for failed tokens instead of silently skipping them.
+  Before v0.6.2 the L1 path returned `Result.ok({ balance: "Error: ..." })`.
+- **Failed `Result`s are never cached**: `withInstanceCache` skips
+  `cache.set` when the resolved value is a `Result` with
+  `success === false`, in all four tiers. Stampede waiters still
+  receive the failed Result; the next caller retries. Note that only
+  `getChainTokenBalances`, `getOrderHistory` and `getCombinedTransfers`
+  use the balance tier — the other balance readers are not cached at
+  all (README/docs corrected in v0.6.2).
 
 ---
 
@@ -552,6 +576,12 @@ Steps:
   or later.
 - Once a version is published to NPM, it cannot be re-uploaded under
   the same number; `npm deprecate` is the available remediation.
+- `scripts/version_manager.mjs` does **not** touch `package-lock.json`
+  (it went stale at `0.6.0` while `package.json` was `0.6.1`). Run
+  `npm install --package-lock-only --ignore-scripts` after every bump
+  so the `npm ci` step in `npm.yml` sees a consistent lockfile.
+- Released: `v0.6.2` (2026-09) — balance-lookup Result semantics and
+  no caching of failed Results, in lock-step with Python `v0.6.2`.
 
 ---
 

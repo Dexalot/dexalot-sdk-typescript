@@ -58,12 +58,13 @@ const client = new DexalotClient(createConfig({
 **Purpose:** user-specific balance data.
 
 **Cached methods:**
-- `getPortfolioBalance(token, address?)`
-- `getAllPortfolioBalances(address?)`
-- `getChainWalletBalance(chain, token, address?)`
-- `getChainWalletBalances(chain, address?)`
-- `getAllChainWalletBalances(address?)`
 - `getChainTokenBalances(chain, tokens, address?)` — token list is sorted+deduped before delegating to the cached internal, so the same set in different order shares one cache slot.
+- `getOrderHistory(account?, opts?)`
+- `getCombinedTransfers(opts?)`
+
+`getPortfolioBalance`, `getAllPortfolioBalances`, `getChainWalletBalance`, `getChainWalletBalances` and `getAllChainWalletBalances` are **not** cached in the TypeScript SDK; every call hits the RPC.
+
+**Failed lookups are never cached.** In every tier, a `Result` with `success === false` (RPC 500, API timeout, chain not connected) is returned to the caller but not stored, so the next call retries immediately instead of serving the failure for the rest of the TTL. Concurrent callers coalesced by stampede protection all receive the same failed `Result`.
 
 Balance data is keyed by `(method, apiBaseUrl, args)` — the wallet address is part of the args, so different users have independent cache entries.
 

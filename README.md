@@ -417,11 +417,7 @@ client.invalidateCache('balance'); // Options: 'static', 'semi_static', 'balance
 - `getTokenUsdPrices(env?)`
 
 **Balance Data (10 seconds):**
-- `getPortfolioBalance(token, address?)`
-- `getAllPortfolioBalances(address?)`
-- `getChainWalletBalance(chain, token, address?)`
-- `getChainWalletBalances(chain, address?)`
-- `getAllChainWalletBalances(address?)`
+- `getChainTokenBalances(chain, tokens, address?)`
 - `getOrderHistory(account?, opts?)`
 - `getCombinedTransfers(opts?)` — `opts`: `{ symbol?, fromTs?, toTs?, limit?, offset? }`
 
@@ -440,15 +436,48 @@ client.invalidateCache('balance'); // Options: 'static', 'semi_static', 'balance
 
 **Note:** Write operations (e.g., `addOrder()`, `cancelOrder()`, `deposit()`, `withdraw()`) are **never cached** to ensure data integrity.
 
+**Note:** A failed `Result` (`success === false`) is **never cached**, in any tier. A transient RPC or API failure is returned to the caller but the next call retries immediately instead of serving the failure for the rest of the TTL.
+
+**Note:** `getPortfolioBalance`, `getAllPortfolioBalances`, `getChainWalletBalance`, `getChainWalletBalances` and `getAllChainWalletBalances` are **not** cached in the TypeScript SDK; every call reads from the RPC.
+
 ### Per-User Caching
 
-Balance data is cached per user address. When `address` is not provided, the SDK uses the connected wallet's address:
+Cached balance data is keyed by wallet address. When `address` is not provided, the SDK uses the connected wallet's address:
 
 ```typescript
 // Each user gets their own cached balance data
-const balance1 = await client.getPortfolioBalance("USDC"); // Uses connected wallet
-const balance2 = await client.getPortfolioBalance("USDC", "0xOtherUser"); // Different cache entry
+const b1 = await client.getChainTokenBalances("Avalanche", ["AVAX", "USDC"]); // Uses connected wallet
+const b2 = await client.getChainTokenBalances("Avalanche", ["AVAX", "USDC"], "0xOtherUser"); // Different cache entry
 ```
+
+### Wallet Balance Results
+
+Chain-wallet balance methods return entries of the shape
+`{ chain, symbol, balance, type }` (ERC20 entries also carry `address`).
+`balance` is always a numeric string on success. A lookup that fails (RPC error,
+chain not connected, unknown token) never puts an error string in `balance`:
+
+- `getChainWalletBalance(chain, token)` returns `Result.fail(<sanitized message>)`.
+- `getChainWalletBalances(chain)` and `getAllChainWalletBalances()` drop the failed
+  entry from `chain_balances` and append `"<chain> <symbol>: <message>"` to an
+  additional `errors` array. The `Result` is still `ok` when at least one lookup
+  succeeded, and `fail` only when every lookup failed.
+- `getChainTokenBalances(chain, tokens, address?)` fails the whole `Result` if any
+  requested token could not be read, so the returned map only ever holds numbers.
+
+```typescript
+const result = await client.getAllChainWalletBalances();
+if (result.success) {
+    for (const entry of result.data!.chain_balances) {
+        console.log(entry.chain, entry.symbol, Number(entry.balance));
+    }
+    for (const problem of result.data!.errors) {
+        console.warn("skipped:", problem); // e.g. "Avalanche AVAX: Error fetching native balance: ..."
+    }
+}
+```
+
+Tolerated per-entry failures are logged at `warn` level.
 
 ### Performance Impact
 

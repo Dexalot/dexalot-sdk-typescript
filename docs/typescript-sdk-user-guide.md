@@ -361,9 +361,22 @@ const r = await client.getPortfolioBalance('USDC');
 
 ```ts
 const all = await client.getAllChainWalletBalances();
+if (all.success) {
+    for (const entry of all.data!.chain_balances) {
+        // entry.balance is always a numeric string here
+        console.log(entry.chain, entry.symbol, entry.balance);
+    }
+    for (const problem of all.data!.errors) {
+        // Lookups that failed (RPC error, chain not connected) are listed
+        // here instead of appearing in chain_balances.
+        console.warn('skipped:', problem);
+    }
+}
 ```
 
-For a known subset of tokens, `getChainTokenBalances` returns a flat `{symbol: balance}` map and errors if any requested token isn't available on the chain:
+`getChainWalletBalances(chain)` has the same shape. Both return `Result.fail` only when *every* lookup failed. The single-token `getChainWalletBalance(chain, token)` returns `Result.fail` on any failure, so `result.data!.balance` is safe to parse whenever `result.success` is true.
+
+For a known subset of tokens, `getChainTokenBalances` returns a flat `{symbol: balance}` map and errors if any requested token isn't available on the chain or could not be read:
 
 ```ts
 const result = await client.getChainTokenBalances(
