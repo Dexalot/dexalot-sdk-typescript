@@ -8,7 +8,12 @@
  *
  * Cache keys are namespaced by `apiBaseUrl` so testnet and mainnet
  * clients do not collide on the same `(method, args)` pair.
+ *
+ * `withInstanceCache` never stores a `Result` whose `success` is false:
+ * a transient failure must not be pinned for the tier's TTL.
  */
+
+import { Result } from './result.js';
 
 interface CacheEntry<T> {
     value: T;
@@ -231,7 +236,12 @@ export function withInstanceCache<T extends (...args: any[]) => Promise<any>>(
 
         const promise = (async () => {
             const result = await fn(...args);
-            cache.set(key, result);
+            // Never pin a failed Result for the tier's TTL: a transient
+            // RPC/API failure is handed to every waiter but the next caller
+            // retries. Successful Results and plain values are cached.
+            if (!(result instanceof Result && !result.success)) {
+                cache.set(key, result);
+            }
             return result;
         })();
         cache.setPending(key, promise);

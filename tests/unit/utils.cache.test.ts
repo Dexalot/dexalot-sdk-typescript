@@ -9,6 +9,7 @@ import {
     clearAllCaches,
     resetCachesForTesting,
 } from '../../src/utils/cache';
+import { Result } from '../../src/utils/result';
 
 describe('MemoryCache', () => {
     let cache: MemoryCache;
@@ -194,6 +195,65 @@ describe('withInstanceCache', () => {
         await wrapped('a');
         await wrapped('a');
         expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not store a failed Result; the next call retries', async () => {
+        const fn = jest
+            .fn()
+            .mockResolvedValueOnce(Result.fail('rpc 500'))
+            .mockResolvedValue(Result.ok(42));
+        const instance = { _cacheEnabled: true, apiBaseUrl: 'https://api.test' };
+        const wrapped = withInstanceCache(instance, cache, 'op', fn);
+
+        const first = await wrapped('a');
+        expect(first.success).toBe(false);
+        expect(first.error).toBe('rpc 500');
+
+        const second = await wrapped('a');
+        expect(second.success).toBe(true);
+        expect(second.data).toBe(42);
+        expect(fn).toHaveBeenCalledTimes(2);
+
+        // The successful Result is cached from here on.
+        const third = await wrapped('a');
+        expect(third).toBe(second);
+        expect(fn).toHaveBeenCalledTimes(2);
+    });
+
+    it('stores successful Results and plain values', async () => {
+        const okFn = jest.fn().mockResolvedValue(Result.ok('x'));
+        const plainFn = jest.fn().mockResolvedValue({ plain: true });
+        const instance = { _cacheEnabled: true, apiBaseUrl: '' };
+        const okWrapped = withInstanceCache(instance, cache, 'ok', okFn);
+        const plainWrapped = withInstanceCache(instance, cache, 'plain', plainFn);
+
+        await okWrapped();
+        await okWrapped();
+        await plainWrapped();
+        await plainWrapped();
+        expect(okFn).toHaveBeenCalledTimes(1);
+        expect(plainFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('stampede waiters all receive the same failed Result and nothing is cached', async () => {
+        let calls = 0;
+        const fn = jest.fn().mockImplementation(async () => {
+            calls++;
+            await new Promise((r) => setTimeout(r, 10));
+            return Result.fail('transient');
+        });
+        const instance = { _cacheEnabled: true, apiBaseUrl: '' };
+        const wrapped = withInstanceCache(instance, cache, 'op', fn);
+
+        const results = await Promise.all([wrapped(1), wrapped(1), wrapped(1)]);
+        expect(calls).toBe(1);
+        for (const r of results) {
+            expect(r.success).toBe(false);
+            expect(r.error).toBe('transient');
+        }
+
+        await wrapped(1);
+        expect(calls).toBe(2);
     });
 
     it('different apiBaseUrl values for the same call do not collide', async () => {

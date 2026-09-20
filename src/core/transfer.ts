@@ -694,7 +694,8 @@ export class TransferClient extends SwapClient {
                     if (token !== "ALOT") {
                         return Result.fail(`Token ${token} not available on Dexalot L1. Only ALOT (native) exists.`);
                     }
-                    return Result.ok(await this._getL1NativeBalance(queryAddress));
+                    const l1Entry = await this._getL1NativeBalance(queryAddress);
+                    return l1Entry.error ? Result.fail(l1Entry.error) : Result.ok(l1Entry);
                 }
 
                 if (!this.isChainRpcAvailable(chain)) {
@@ -877,15 +878,13 @@ export class TransferClient extends SwapClient {
                 const info: any = {
                     address: queryAddress,
                     chain: chain,
-                    chain_balances: []
+                    chain_balances: [],
+                    errors: [],
                 };
 
                 if (chain === "Dexalot L1") {
-                    const l1Entry = await this._getL1NativeBalance(queryAddress);
-                    if (!l1Entry.error) {
-                        info.chain_balances.push(l1Entry);
-                    }
-                    return Result.ok(info);
+                    this._collectBalanceEntry(info, await this._getL1NativeBalance(queryAddress));
+                    return this._balancesResult(info);
                 }
 
                 if (!this.isChainRpcAvailable(chain)) {
@@ -893,26 +892,55 @@ export class TransferClient extends SwapClient {
                     return Result.fail(`Chain '${chain}' not connected. Available: ${available.join(', ')}`);
                 }
 
-                const chainInfo = this.chainConfig[chain] || {};
-                const chainId = chainInfo.chain_id;
-                const nativeSymbol = chainInfo.native_symbol || 'ETH';
+                await this._collectChainBalances(info, chain, queryAddress);
+                return this._balancesResult(info);
+            } catch (e) {
+                return Result.fail(this._sanitizeError(e, 'getting chain wallet balances'));
+            }
+        }
 
-                await this.withRpcFailover(chain, async (provider) => {
+        /**
+         * Read the native balance and every ERC20 balance for one connected
+         * chain into `info`. The two reads run as separate `withRpcFailover`
+         * calls so that a native-read failure (after provider failover is
+         * exhausted) is recorded in `info.errors` and the ERC20 reads still
+         * run, and vice versa.
+         */
+        public async _collectChainBalances(info: any, chain: string, queryAddress: string): Promise<void> {
+            const chainInfo = this.chainConfig[chain] || {};
+            const chainId = chainInfo.chain_id;
+            const nativeSymbol = chainInfo.native_symbol || 'ETH';
+
+            try {
+                const nativeEntry = await this.withRpcFailover(chain, async (provider) => {
                     const bal = await provider.getBalance(queryAddress);
-                    info.chain_balances.push({
+                    return {
                         chain,
                         symbol: nativeSymbol,
                         type: "Native",
                         balance: Utils.unitConversion(bal.toString(), 18, false),
-                    });
-                    if (chainId) {
-                        await this._fetchErc20Balances(info, chainId, chain, provider, queryAddress);
-                    }
+                    };
                 });
-
-                return Result.ok(info);
+                info.chain_balances.push(nativeEntry);
             } catch (e) {
-                return Result.fail(this._sanitizeError(e, 'getting chain wallet balances'));
+                this._collectBalanceEntry(
+                    info,
+                    this._balanceErrorEntry(chain, nativeSymbol, 'Native', e, 'fetching native balance')
+                );
+            }
+
+            if (!chainId) {
+                return;
+            }
+            try {
+                await this.withRpcFailover(chain, async (provider) => {
+                    await this._fetchErc20Balances(info, chainId, chain, provider, queryAddress);
+                });
+            } catch (e) {
+                this._collectBalanceEntry(
+                    info,
+                    this._balanceErrorEntry(chain, '', 'ERC20', e, 'fetching ERC20 balances')
+                );
             }
         }
 
@@ -929,85 +957,112 @@ export class TransferClient extends SwapClient {
             try {
                 const info: any = {
                     address: queryAddress,
-                    chain_balances: []
+                    chain_balances: [],
+                    errors: [],
                 };
 
-                const l1Entry = await this._getL1NativeBalance(queryAddress);
-                if (!l1Entry.error) {
-                    info.chain_balances.push(l1Entry);
-                }
+                this._collectBalanceEntry(info, await this._getL1NativeBalance(queryAddress));
 
                 for (const name of this.getAvailableChainNames()) {
-                    const chainInfo = this.chainConfig[name] || {};
-                    const chainId = chainInfo.chain_id;
-                    const nativeSymbol = chainInfo.native_symbol || 'ETH';
-
-                    try {
-                        await this.withRpcFailover(name, async (provider) => {
-                            const bal = await provider.getBalance(queryAddress);
-                            info.chain_balances.push({
-                                chain: name,
-                                symbol: nativeSymbol,
-                                type: "Native",
-                                balance: Utils.unitConversion(bal.toString(), 18, false),
-                            });
-                            if (chainId) {
-                                await this._fetchErc20Balances(info, chainId, name, provider, queryAddress);
-                            }
-                        });
-                    } catch (e: any) {
-                        info.chain_balances.push({
-                            chain: name,
-                            symbol: nativeSymbol,
-                            type: "Native",
-                            balance: `Error: ${e.message ?? String(e)}`,
-                        });
-                    }
+                    await this._collectChainBalances(info, name, queryAddress);
                 }
 
-                return Result.ok(info);
+                return this._balancesResult(info);
             } catch (e) {
                 return Result.fail(this._sanitizeError(e, 'getting all chain wallet balances'));
             }
         }
 
+        /**
+         * Build a balance entry describing a failed lookup.
+         *
+         * `balance` is always `null` on failure; the reason lives in `error`.
+         * Exceptions are sanitized and logged at `warn` (a per-token RPC blip
+         * is tolerated, not fatal). A plain string is used verbatim for
+         * non-exception conditions such as "not connected" and is not logged.
+         */
+        public _balanceErrorEntry(
+            chain: string,
+            symbol: string,
+            kind: string,
+            failure: unknown,
+            context: string,
+            extra: Record<string, any> = {}
+        ): any {
+            let message: string;
+            if (typeof failure === 'string') {
+                message = failure;
+            } else {
+                message = this._sanitizeError(failure, context);
+                this._logger.warn('Balance lookup failed', { chain, symbol, error: message });
+            }
+            return { chain, symbol, balance: null, ...extra, type: kind, error: message };
+        }
+
+        /**
+         * Route one balance entry into `info.chain_balances` (numeric balance)
+         * or `info.errors` (`"<chain> <symbol>: <error>"`), so every balance
+         * in a plural result is numeric.
+         */
+        public _collectBalanceEntry(info: any, entry: any): void {
+            if (entry.error) {
+                const label = [entry.chain, entry.symbol].filter(Boolean).join(' ');
+                info.errors.push(label ? `${label}: ${entry.error}` : String(entry.error));
+            } else {
+                info.chain_balances.push(entry);
+            }
+        }
+
+        /**
+         * `Result.fail` only when every lookup failed; otherwise `Result.ok`
+         * with partial failures listed in `info.errors`.
+         */
+        public _balancesResult(info: any): Result<any> {
+            if (info.chain_balances.length === 0 && info.errors.length > 0) {
+                return Result.fail(info.errors.join('; '));
+            }
+            return Result.ok(info);
+        }
+
         public async _getL1NativeBalance(address: string): Promise<any> {
-            const entry: any = { chain: "Dexalot L1", symbol: "ALOT", balance: "Not connected", type: "Native" };
+            const ok = (wei: bigint | string) => ({
+                chain: "Dexalot L1",
+                symbol: "ALOT",
+                balance: Utils.unitConversion(wei.toString(), 18, false),
+                type: "Native",
+            });
             if (this.isChainRpcAvailable("Dexalot L1")) {
                 try {
                     const wei = await this.withRpcFailover("Dexalot L1", async (p) => p.getBalance(address));
-                    entry.balance = Utils.unitConversion(wei.toString(), 18, false);
-                } catch (e: any) {
-                    entry.balance = `Error: ${e.message ?? String(e)}`;
+                    return ok(wei);
+                } catch (e) {
+                    return this._balanceErrorEntry("Dexalot L1", "ALOT", "Native", e, 'fetching L1 native balance');
                 }
-                return entry;
             }
             const l1Fallback = this.subnetProvider || this.provider || this.signer?.provider;
-            if (l1Fallback) {
-                try {
-                    const l1Bal = await l1Fallback.getBalance(address);
-                    entry.balance = Utils.unitConversion(l1Bal.toString(), 18, false);
-                } catch (e: any) {
-                    entry.balance = `Error: ${e.message}`;
-                }
+            if (!l1Fallback) {
+                return this._balanceErrorEntry("Dexalot L1", "ALOT", "Native", 'Dexalot L1 not connected', '');
             }
-            return entry;
+            try {
+                const l1Bal = await l1Fallback.getBalance(address);
+                return ok(l1Bal);
+            } catch (e) {
+                return this._balanceErrorEntry("Dexalot L1", "ALOT", "Native", e, 'fetching L1 native balance');
+            }
         }
 
         public async _getNativeBalance(chainName: string, provider: Provider, address: string, nativeSymbol: string): Promise<any> {
-            const entry = {
-                chain: chainName,
-                symbol: nativeSymbol,
-                balance: "Error",
-                type: "Native"
-            };
             try {
                 const bal = await provider.getBalance(address);
-                entry.balance = Utils.unitConversion(bal.toString(), 18, false);
-            } catch (e: any) {
-                entry.balance = `Error: ${e.message}`;
+                return {
+                    chain: chainName,
+                    symbol: nativeSymbol,
+                    balance: Utils.unitConversion(bal.toString(), 18, false),
+                    type: "Native",
+                };
+            } catch (e) {
+                return this._balanceErrorEntry(chainName, nativeSymbol, "Native", e, 'fetching native balance');
             }
-            return entry;
         }
 
         public async _getErc20Balance(chainName: string, chainId: number, provider: Provider, address: string, token: string): Promise<any> {
@@ -1040,24 +1095,22 @@ export class TransferClient extends SwapClient {
                 return { error: `Token ${token} not available on chain ${chainName}.` };
             }
 
-            const entry = {
-                chain: chainName,
-                symbol: token,
-                balance: "Error",
-                address: tokenInfo.address,
-                type: "ERC20"
-            };
-
             try {
                 const contract = new Contract(tokenInfo.address, ERC20_ABI, provider);
                 const bal = await contract.balanceOf(address);
                 const dec = tokenInfo.decimals || 18;
-                entry.balance = Utils.unitConversion(bal.toString(), dec, false);
-            } catch (e: any) {
-                entry.balance = `Error: ${e.message}`;
+                return {
+                    chain: chainName,
+                    symbol: token,
+                    balance: Utils.unitConversion(bal.toString(), dec, false),
+                    address: tokenInfo.address,
+                    type: "ERC20",
+                };
+            } catch (e) {
+                return this._balanceErrorEntry(chainName, token, "ERC20", e, 'fetching ERC20 balance', {
+                    address: tokenInfo.address,
+                });
             }
-
-            return entry;
         }
 
         public async _fetchErc20Balances(info: any, chainId: number, chainName: string, provider: Provider, address: string) {
@@ -1095,22 +1148,25 @@ export class TransferClient extends SwapClient {
                         continue;
                     }
 
-                    const tokenEntry = {
-                        chain: chainName,
-                        symbol,
-                        balance: 'Error',
-                        address: tokenInfo.address,
-                        type: 'ERC20',
-                    };
-
                     try {
                         const contract = new Contract(tokenInfo.address, ERC20_ABI, provider);
                         const bal = await contract.balanceOf(address);
                         const dec = tokenInfo.decimals || 18;
-                        tokenEntry.balance = Utils.unitConversion(bal.toString(), dec, false);
-                        info.chain_balances.push(tokenEntry);
-                    } catch {
-                        continue;
+                        info.chain_balances.push({
+                            chain: chainName,
+                            symbol,
+                            balance: Utils.unitConversion(bal.toString(), dec, false),
+                            address: tokenInfo.address,
+                            type: 'ERC20',
+                        });
+                    } catch (e) {
+                        info.errors ??= [];
+                        this._collectBalanceEntry(
+                            info,
+                            this._balanceErrorEntry(chainName, symbol, 'ERC20', e, 'fetching ERC20 balance', {
+                                address: tokenInfo.address,
+                            })
+                        );
                     }
                 }
             };

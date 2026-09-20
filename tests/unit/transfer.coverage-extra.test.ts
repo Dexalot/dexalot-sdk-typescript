@@ -14,6 +14,8 @@ describe('TransferClient extra branch coverage', () => {
 
     beforeEach(() => {
         jest.clearAllMocks();
+        // Tolerated balance-lookup failures log a warning; keep test output quiet.
+        jest.spyOn(console, 'warn').mockImplementation(() => {});
         mockSigner = {
             getAddress: jest.fn().mockResolvedValue('0x' + 'a'.repeat(40)),
             connect: jest.fn().mockReturnThis(),
@@ -190,7 +192,93 @@ describe('TransferClient extra branch coverage', () => {
         jest.spyOn(client, 'isChainRpcAvailable').mockReturnValue(true);
         jest.spyOn(client, 'withRpcFailover').mockRejectedValue(new Error('rpc down'));
         const entry = await client._getL1NativeBalance('0xaddr');
-        expect(String(entry.balance)).toContain('Error');
+        expect(entry.balance).toBeNull();
+        expect(entry.error).toContain('rpc down');
+        expect(entry.error).toContain('fetching L1 native balance');
+    });
+
+    it('_getL1NativeBalance reports not connected when no provider exists', async () => {
+        jest.spyOn(client, 'isChainRpcAvailable').mockReturnValue(false);
+        client.subnetProvider = null as any;
+        client.provider = undefined as any;
+        (client.signer as any).provider = undefined;
+        const warnSpy = jest.spyOn(client._logger, 'warn');
+        const entry = await client._getL1NativeBalance('0xaddr');
+        expect(entry).toEqual({
+            chain: 'Dexalot L1',
+            symbol: 'ALOT',
+            balance: null,
+            type: 'Native',
+            error: 'Dexalot L1 not connected',
+        });
+        expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('_balanceErrorEntry sanitizes, logs a warning and keeps extra fields', () => {
+        const warnSpy = jest.spyOn(client._logger, 'warn').mockImplementation(() => {});
+        const entry = client._balanceErrorEntry(
+            'Avalanche', 'USDC', 'ERC20',
+            new Error('failed: https://rpc.example.com/secret-key'),
+            'fetching ERC20 balance',
+            { address: '0xusdc' }
+        );
+        expect(entry.balance).toBeNull();
+        expect(entry.address).toBe('0xusdc');
+        expect(entry.type).toBe('ERC20');
+        expect(entry.error).not.toContain('secret-key');
+        expect(warnSpy).toHaveBeenCalledWith(
+            'Balance lookup failed',
+            expect.objectContaining({ chain: 'Avalanche', symbol: 'USDC' })
+        );
+    });
+
+    it('_collectBalanceEntry reports an error entry without chain/symbol verbatim', () => {
+        const info: any = { chain_balances: [], errors: [] };
+        client._collectBalanceEntry(info, { error: 'Token X not found' });
+        client._collectBalanceEntry(info, { chain: 'A', symbol: 'B', balance: '1' });
+        expect(info.errors).toEqual(['Token X not found']);
+        expect(info.chain_balances).toEqual([{ chain: 'A', symbol: 'B', balance: '1' }]);
+    });
+
+    it('_collectChainBalances records an ERC20 failover failure without losing the native entry', async () => {
+        client.chainConfig = { Avalanche: { chain_id: 43114, native_symbol: 'AVAX' } as any };
+        client.connectedChainProviders = { Avalanche: { getBalance: jest.fn().mockResolvedValue(5n) } as any };
+        jest.spyOn(client, '_fetchErc20Balances').mockRejectedValue(new Error('erc20 rpc down'));
+        jest.spyOn(client._logger, 'warn').mockImplementation(() => {});
+        const info: any = { chain_balances: [], errors: [] };
+        await client._collectChainBalances(info, 'Avalanche', '0xaddr');
+        expect(info.chain_balances).toHaveLength(1);
+        expect(info.chain_balances[0].type).toBe('Native');
+        expect(info.errors).toHaveLength(1);
+        expect(info.errors[0]).toMatch(/^Avalanche: /);
+        expect(info.errors[0]).toContain('erc20 rpc down');
+    });
+
+    it('getChainWalletBalances fails cleanly when the per-chain collector throws', async () => {
+        jest.spyOn(client, '_resolveQueryAddress').mockResolvedValue({ success: true, data: '0xx' } as any);
+        jest.spyOn(client, 'isChainRpcAvailable').mockReturnValue(true);
+        jest.spyOn(client, '_collectChainBalances').mockRejectedValue(new Error('collector boom'));
+        const r = await client.getChainWalletBalances('Avalanche');
+        expect(r.success).toBe(false);
+        expect(r.error).toContain('getting chain wallet balances');
+        expect(r.error).toContain('collector boom');
+    });
+
+    it('_collectChainBalances skips ERC20 reads when the chain has no chain_id', async () => {
+        client.chainConfig = { Avalanche: { native_symbol: 'AVAX' } as any };
+        client.connectedChainProviders = { Avalanche: { getBalance: jest.fn().mockResolvedValue(5n) } as any };
+        const erc20Spy = jest.spyOn(client, '_fetchErc20Balances');
+        const info: any = { chain_balances: [], errors: [] };
+        await client._collectChainBalances(info, 'Avalanche', '0xaddr');
+        expect(info.chain_balances).toHaveLength(1);
+        expect(erc20Spy).not.toHaveBeenCalled();
+    });
+
+    it('_balancesResult is ok when there is nothing to report', () => {
+        const info: any = { chain_balances: [], errors: [] };
+        const r = client._balancesResult(info);
+        expect(r.success).toBe(true);
+        expect(r.data).toBe(info);
     });
 
     it('_getL1NativeBalance uses subnetProvider fallback', async () => {
@@ -203,7 +291,8 @@ describe('TransferClient extra branch coverage', () => {
     it('_getNativeBalance records RPC error message', async () => {
         const p = { getBalance: jest.fn().mockRejectedValue(new Error('bal err')) } as any;
         const e = await (client as any)._getNativeBalance('C', p, '0xx', 'ETH');
-        expect(e.balance).toContain('bal err');
+        expect(e.balance).toBeNull();
+        expect(e.error).toContain('bal err');
     });
 
     it('_getErc20Balance returns error when token missing in tokenData', async () => {
@@ -219,7 +308,10 @@ describe('TransferClient extra branch coverage', () => {
             balanceOf: jest.fn().mockRejectedValue(new Error('ofail')),
         }));
         const r = await (client as any)._getErc20Balance('C', 1, {} as any, '0xx', 'X');
-        expect(r.balance).toContain('ofail');
+        expect(r.balance).toBeNull();
+        expect(r.error).toContain('ofail');
+        expect(r.address).toBe('0xtok');
+        expect(r.type).toBe('ERC20');
     });
 
     it('_fetchErc20Balances skips tokens without address on chain', async () => {
@@ -364,7 +456,8 @@ describe('TransferClient extra branch coverage', () => {
         jest.spyOn(client, 'isChainRpcAvailable').mockReturnValue(false);
         client.subnetProvider = { getBalance: jest.fn().mockRejectedValue(new Error('fallback fail')) } as any;
         const entry = await client._getL1NativeBalance('0xaddr');
-        expect(String(entry.balance)).toContain('fallback fail');
+        expect(entry.balance).toBeNull();
+        expect(entry.error).toContain('fallback fail');
     });
 
     it('_getErc20Balance records missing error message text safely', async () => {
@@ -375,7 +468,9 @@ describe('TransferClient extra branch coverage', () => {
             balanceOf: jest.fn().mockRejectedValue({}),
         }));
         const r = await (client as any)._getErc20Balance('C', 1, {} as any, '0xx', 'X');
-        expect(r.balance).toContain('Error:');
+        expect(r.balance).toBeNull();
+        expect(typeof r.error).toBe('string');
+        expect(r.error.length).toBeGreaterThan(0);
     });
 
     it('getTokenDetails accepts direct chainid and evmdecimals fields', async () => {
@@ -417,14 +512,18 @@ describe('TransferClient extra branch coverage', () => {
         jest.spyOn(client, '_getL1NativeBalance').mockResolvedValue({ chain: 'Dexalot L1', symbol: 'ALOT', balance: '1', type: 'Native' } as any);
         const r = await client.getAllChainWalletBalances();
         expect(r.success).toBe(true);
-        expect(String(r.data!.chain_balances.find((x: any) => x.chain === 'Avalanche')?.balance)).toContain('rpc-string');
+        expect(r.data!.chain_balances.find((x: any) => x.chain === 'Avalanche')).toBeUndefined();
+        expect(r.data!.errors).toHaveLength(1);
+        expect(r.data!.errors[0]).toContain('Avalanche AVAX: ');
+        expect(r.data!.errors[0]).toContain('rpc-string');
     });
 
     it('_getL1NativeBalance uses String(error) when failover error has no message', async () => {
         jest.spyOn(client, 'isChainRpcAvailable').mockReturnValue(true);
         jest.spyOn(client, 'withRpcFailover').mockRejectedValue('rpc-string');
         const entry = await client._getL1NativeBalance('0xaddr');
-        expect(String(entry.balance)).toContain('rpc-string');
+        expect(entry.balance).toBeNull();
+        expect(entry.error).toContain('rpc-string');
     });
 
     it('_getErc20Balance falls back to 18 decimals when token decimals are zero', async () => {

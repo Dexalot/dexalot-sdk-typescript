@@ -96,6 +96,23 @@ const result = await client.executeRFQSwap(quote);
 
 For RFQ swaps specifically, `swap.ts` replays the failed transaction as `eth_call` at the reverting block to extract the `execution reverted: X` reason. The replay is best-effort — if the node can't replay, the `reason=` segment is omitted.
 
+### 4. Wallet balance lookups
+
+A chain-wallet balance that cannot be read (RPC error, chain not connected, unknown token) is never reported as a success with an error string in the `balance` field. The single-token method fails the `Result`; the plural methods keep the entries that succeeded and list the failures separately.
+
+```ts
+const one = await client.getChainWalletBalance('Dexalot L1', 'ALOT');
+// one.success === false
+// one.error === 'Error fetching L1 native balance: ...'   (sanitized)
+
+const all = await client.getAllChainWalletBalances();
+// all.success === true   (at least one lookup succeeded)
+// all.data.chain_balances -> only entries with a numeric "balance"
+// all.data.errors         -> ['Avalanche AVAX: Error fetching native balance: ...']
+```
+
+Failed `Result`s are not cached, so the next call retries immediately. These tolerated failures are logged at `warn` level.
+
 ---
 
 ## Revert reasons
